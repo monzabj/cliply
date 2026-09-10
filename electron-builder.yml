@@ -1,0 +1,23 @@
+appId: app.clipper.local
+productName: Clipper
+directories:
+  output: dist
+files:
+  - electron/**
+  - out/**
+  - public/icon-dark-32x32.png
+  - package.json
+asarUnpack:
+  - node_modules/ffmpeg-static/**
+win:
+  target:
+    - nsis
+    - portable
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+mac:
+  target: dmg
+  category: public.app-category.video
+linux:
+  target: AppImage
