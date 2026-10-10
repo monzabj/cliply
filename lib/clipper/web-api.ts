@@ -139,9 +139,98 @@ export function createWebAPI(): ClipperAPI {
       return []
     },
     async selectSource() {},
+    // The browser has no stable source list; the share picker decides.
+    async resolveSource() {
+      return null
+    },
+    async getDiskUsage() {
+      const clips = await tx<ClipMeta[]>(STORE_CLIPS, 'readonly', (s) => s.getAll())
+      return clips.reduce((acc, c) => acc + c.sizeBytes, 0)
+    },
     async getForegroundWindow() {
       return null
     },
+    log() {},
+    async openLog() {},
+    onShotStarted: () => () => {},
+    onShotDone: () => () => {},
+    async takeShot() {
+      return { ok: false, reason: 'web' }
+    },
+    async openShotsDir() {},
+    async listShots() {
+      return []
+    },
+    async deleteShot() {},
+    async renameShot(_id: string, title: string) {
+      return { id: '', fileName: '', title, createdAt: '', sizeBytes: 0, width: 0, height: 0, source: { name: '' } }
+    },
+    async showShotInFolder() {},
+    async renameClipFile(_id: string, baseName: string) {
+      return { id: '', fileName: baseName, title: baseName, createdAt: '', durationSec: 0, sizeBytes: 0, source: { type: 'screen' as const, name: '' } }
+    },
+    async renameShotFile(_id: string, baseName: string) {
+      return { id: '', fileName: baseName, title: baseName, createdAt: '', sizeBytes: 0, width: 0, height: 0, source: { name: '' } }
+    },
+    async copyShotFile() {
+      return false
+    },
+    async exportShot() {},
+    getShotUrl() {
+      return ''
+    },
+    getShotThumbUrl() {
+      return null
+    },
+    async pickSound() {
+      return null
+    },
+    async clearSound() {},
+    soundUrl: (_file: string | null, fallback: string) => fallback,
+    async createClipsDir() {
+      return null
+    },
+    async copyClipFile() {
+      return false
+    },
+    async setMix() {
+      return null
+    },
+    getMicUrl() {
+      return null
+    },
+    async getFilmstrip() {
+      return null
+    },
+    async clipMenu() {
+      return null
+    },
+    setTrayState() {},
+
+    // The browser preview has none of the desktop-only machinery below.
+    async getPreviewUrl(clip) {
+      return this.getClipUrl(clip)
+    },
+    nativeAvailable: async () => false,
+    nativeStart: async () => ({ ok: false as const, error: 'browser' }),
+    async nativeStop() {},
+    nativeSave: async () => {
+      throw new Error('Native recording is desktop-only')
+    },
+    checkForUpdate: async () => ({ status: 'unsupported' as const, version: null, percent: 0, error: null }),
+    downloadUpdate: async () => ({ status: 'unsupported' as const, version: null, percent: 0, error: null }),
+    async installUpdate() {},
+    getUpdateState: async () => ({ status: 'unsupported' as const, version: null, percent: 0, error: null }),
+    onUpdateState: () => () => {},
+    pickMedalFolders: async () => [],
+    scanMedal: async () => {
+      throw new Error('Medal import is desktop-only')
+    },
+    importMedal: async () => ({ imported: 0, skipped: 0, failed: 0, backup: null }),
+    async cancelMedalImport() {},
+    async resetMedalImport() {},
+    onMedalProgress: () => () => {},
+    setClipsGame: async () => [],
 
     async listClips() {
       const clips = await tx<ClipMeta[]>(STORE_CLIPS, 'readonly', (s) => s.getAll())

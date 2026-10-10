@@ -5,17 +5,33 @@ directories:
 files:
   - electron/**
   - out/**
-  - public/icon-dark-32x32.png
+  - public/tray-idle-16.png
+  - public/tray-idle-32.png
+  - public/tray-rec-16.png
+  - public/tray-rec-32.png
   - package.json
 asarUnpack:
   - node_modules/ffmpeg-static/**
 win:
+  icon: build/icon.ico
   target:
-    - nsis
-    - portable
+    # NSIS only: it is what the in-app updater installs. The portable build
+    # re-extracted ~800 MB on every launch and could not update itself.
+    - target: nsis
+      arch: [x64]
 nsis:
-  oneClick: false
-  allowToChangeInstallationDirectory: true
+  # One click, per user, no UAC: this is also what an in-app update runs, so it
+  # has to finish without anyone answering a wizard mid-game.
+  oneClick: true
+  perMachine: false
+  allowElevation: false
+  deleteAppDataOnUninstall: false
+  artifactName: Clipper-Setup-${version}.${ext}
+  include: packaging/installer.nsh
+publish:
+  provider: github
+  owner: monzabj
+  repo: cliply
 mac:
   target: dmg
   category: public.app-category.video

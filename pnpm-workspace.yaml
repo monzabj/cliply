@@ -1,3 +1,7 @@
 minimumReleaseAgeExclude:
   - '@next/*'
   - next
+
+allowBuilds:
+  electron-winstaller: false
+  ffmpeg-static: true

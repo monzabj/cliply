@@ -136,3 +136,106 @@
     }
   }
 }
+
+@layer base {
+  /* Native scrolling everywhere: it always answers the wheel, needs no JS, and
+     the previous ScrollArea component grew to fit its content instead of
+     clipping, which left the settings page unscrollable. */
+  .scroll-y {
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+    scrollbar-width: thin;
+    scrollbar-color: oklch(1 0 0 / 14%) transparent;
+    overscroll-behavior: contain;
+  }
+  .scroll-y::-webkit-scrollbar {
+    width: 10px;
+  }
+  .scroll-y::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scroll-y::-webkit-scrollbar-thumb {
+    background-color: oklch(1 0 0 / 12%);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  .scroll-y:hover::-webkit-scrollbar-thumb {
+    background-color: oklch(1 0 0 / 22%);
+  }
+}
+
+@layer utilities {
+  /* Soft amber halo behind whatever is actively recording. */
+  .rec-glow {
+    box-shadow:
+      0 0 0 1px var(--signal),
+      0 0 22px -6px var(--signal);
+  }
+  .rec-dot {
+    box-shadow: 0 0 10px -1px var(--signal);
+  }
+  /* Thumbnails sit on this so an empty or letterboxed frame still reads as a slot. */
+  .tile-empty {
+    background:
+      radial-gradient(120% 120% at 50% 0%, oklch(1 0 0 / 4%) 0%, transparent 60%),
+      var(--muted);
+  }
+  .fade-mask-b {
+    mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
+  }
+}
+
+@layer components {
+  /* Native range input: one less component to maintain, and it renders
+     reliably where the base-ui Slider was coming out invisible. */
+  .range-signal {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--muted);
+    outline: none;
+    cursor: pointer;
+  }
+  .range-signal::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    background: var(--signal);
+    border: 2px solid var(--surface);
+    cursor: pointer;
+    transition: transform 0.12s ease;
+  }
+  .range-signal::-webkit-slider-thumb:hover {
+    transform: scale(1.15);
+  }
+  .range-signal:focus-visible {
+    box-shadow: 0 0 0 3px var(--ring);
+  }
+}
+
+/* Deliberately unlayered: Tailwind's utilities layer comes after @layer
+   components, so a max-h utility on the video would otherwise win here. */
+@media all {
+  .clip-stage:fullscreen {
+    height: 100vh;
+    width: 100vw;
+    justify-content: center;
+  }
+  .clip-stage:fullscreen .clip-stage-video {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+  }
+  .clip-stage:fullscreen .clip-stage-video video {
+    max-height: 100% !important;
+    height: 100%;
+    width: 100%;
+    object-fit: contain;
+  }
+}

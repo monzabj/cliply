@@ -54,13 +54,24 @@ export function acceleratorKeys(accelerator: string): string[] {
   })
 }
 
-export function formatDuration(sec: number) {
+export function formatDuration(seconds: number) {
+  // Clips land on fractional lengths (29.8s); nobody wants to read that.
+  const sec = Math.round(seconds)
   if (sec < 60) return `${sec}s`
   const m = Math.floor(sec / 60)
   const s = sec % 60
   return s ? `${m}m ${s}s` : `${m}m`
 }
 
+/** m:ss for the player readout — tenths there are just noise. */
+export function formatClock(sec: number) {
+  const total = Math.max(0, Math.floor(sec))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+/** Keeps tenths: used where the exact cut point matters. */
 export function formatTimecode(sec: number) {
   const total = Math.max(0, sec)
   const m = Math.floor(total / 60)
