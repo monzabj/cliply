@@ -58,7 +58,9 @@ export function SetupDialog({ open, onClose }: { open: boolean; onClose: () => v
     const sessions: SessionConfig[] = chosen.length
       ? chosen.map((s, i) => ({
           id: i === 0 ? 'main' : `s${i}`,
-          name: chosen.length > 1 ? `Monitor ${i + 1}` : s.name,
+          // Windows' own name ("Pantalla 2"). Numbering by list order invented a
+          // "Monitor 1" that could be Windows' screen 2, which read as two different 1s.
+          name: s.name,
           source: toRef(s),
           autoArm: true,
         }))
@@ -106,7 +108,7 @@ export function SetupDialog({ open, onClose }: { open: boolean; onClose: () => v
         </DialogHeader>
 
         <div className={cn('grid gap-3', screens.length > 1 ? 'sm:grid-cols-2' : 'sm:grid-cols-1')}>
-          {screens.map((s, i) => {
+          {screens.map((s) => {
             const active = picked.includes(s.id)
             return (
               <button
@@ -137,7 +139,7 @@ export function SetupDialog({ open, onClose }: { open: boolean; onClose: () => v
                 <div className="flex items-center gap-2 px-3 py-2.5">
                   <Monitor className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
                   <span className="truncate text-sm font-medium">
-                    {screens.length > 1 ? `Monitor ${i + 1}` : s.name}
+                    {s.name}
                   </span>
                   {s.width && s.height && (
                     <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground">

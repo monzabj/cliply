@@ -93,6 +93,15 @@ function migrate(saved) {
     }
   }
 
+  // Older setups named sessions "Monitor 1, 2…" by list order, which need not
+  // match Windows' own numbering — "Monitor 1" could be recording "Pantalla 2".
+  // Such placeholder names give way to the name of the screen actually recorded.
+  out.sessions = out.sessions.map((sess) =>
+    sess.source && sess.source.name && /^Monitor \d+$/.test(sess.name || '')
+      ? { ...sess, name: sess.source.name }
+      : sess,
+  )
+
   // Two sessions on the same screen means that screen gets recorded twice. It
   // used to happen when an identifier drifted and the UI created a duplicate
   // instead of recognising the existing one; drop the extras on load.

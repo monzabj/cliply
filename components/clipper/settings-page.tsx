@@ -743,7 +743,8 @@ function HotkeyRow({
           {isClip && <option value="__all">{t('settings.allSessions')}</option>}
           {sessions.map((x) => (
             <option key={x.id} value={x.id}>
-              {x.name}
+              {/* The resolution tells two screens apart at a glance. */}
+              {x.source?.width && x.source?.height ? `${x.name} · ${x.source.width}×${x.source.height}` : x.name}
             </option>
           ))}
         </select>
