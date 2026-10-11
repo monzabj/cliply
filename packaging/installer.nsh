@@ -1,5 +1,15 @@
 ; Extra steps for the NSIS installer (electron-builder `nsis.include`).
-;
+
+; The screen recorder is an ffmpeg.exe that lives inside the install folder. An
+; app that does not stop it before updating (1.3.0 did not) leaves that file
+; locked, the copy fails and the old version is relaunched. Close any ffmpeg
+; running from our folder — only ours, never someone else's ffmpeg.
+!macro customInit
+  nsExec::Exec `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-Process ffmpeg -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like '$LOCALAPPDATA\Programs\Clipper\*' } | Stop-Process -Force"`
+  Pop $0
+  Sleep 500
+!macroend
+
 ; 1.2 was also distributed through a hand-made Inno Setup wrapper that installs
 ; into the same folder (%LOCALAPPDATA%\Programs\Clipper). This installer takes
 ; over that folder, so drop the Inno leftovers — otherwise "Apps & features"

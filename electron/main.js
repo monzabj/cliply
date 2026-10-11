@@ -916,9 +916,14 @@ function registerIpc() {
     return updateState
   })
 
-  ipcMain.handle('update:install', () => {
+  ipcMain.handle('update:install', async () => {
     if (updateState.status !== 'ready') return
     quitting = true
+    // ffmpeg runs from inside the install folder. The installer starts the moment
+    // quitAndInstall is called, so a recorder still running keeps ffmpeg.exe
+    // locked, the copy fails and the old version comes back. Stop it first.
+    log.write('update', 'deteniendo grabaciones antes de instalar')
+    await native.stopAll()
     // The second argument tells the installer to start the app again afterwards.
     autoUpdater.quitAndInstall(false, true)
   })
