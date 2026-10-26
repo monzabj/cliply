@@ -19,3 +19,7 @@ node_modules
 
 # TypeScript incremental build info
 *.tsbuildinfo
+
+# Generated Windows input worker and local test artifacts
+/electron/input/InputWorker.exe
+/.test-artifacts/

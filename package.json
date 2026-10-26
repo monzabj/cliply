@@ -1,14 +1,17 @@
 {
   "name": "clipper",
-  "version": "1.3.2",
+  "version": "1.3.3-inputs.1",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "electron:dev": "concurrently -k -n next,electron \"next dev -p 3000\" \"node electron/dev.js\"",
-    "electron:build": "next build && electron-builder",
-    "electron:build:win": "next build && electron-builder --win"
+    "electron:dev": "node scripts/build-input-worker.cjs && concurrently -k -n next,electron \"next dev -p 3000\" \"node electron/dev.js\"",
+    "electron:build": "node scripts/build-input-worker.cjs && next build && electron-builder",
+    "electron:build:win": "node scripts/build-input-worker.cjs && next build && electron-builder --win",
+    "test": "node --test test/*.test.js",
+    "build:inputs": "node scripts/build-input-worker.cjs",
+    "test:inputs:integration": "node test/inputs.integration.cjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

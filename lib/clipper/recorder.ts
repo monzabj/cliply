@@ -93,6 +93,8 @@ export interface ClipSlice {
   /** Seconds to skip from the start of the concatenated parts to hit the requested length. */
   trimStartSec: number
   durationSec: number
+  inputStartWall: number
+  inputEndWall: number
   /**
    * True when the parts are slices of ONE encoder stream and must be joined byte
    * for byte (header first). False means each part is a standalone file for the
@@ -181,6 +183,8 @@ export class RollingRecorder {
         container: this.codec.container,
         trimStartSec,
         durationSec: Math.min(seconds, total),
+        inputStartWall: selected.length ? selected[0].start + trimStartSec * 1000 : Date.now(),
+        inputEndWall: selected.length ? selected[selected.length - 1].end : Date.now(),
         continuous: false,
       }
     }
@@ -200,6 +204,8 @@ export class RollingRecorder {
       container: this.codec.container,
       trimStartSec: selected.length ? (selected[0].fromSec ?? 0) : 0,
       durationSec: Math.min(seconds, total),
+      inputStartWall: selected.length ? selected[0].start : Date.now(),
+      inputEndWall: selected.length ? selected[selected.length - 1].end : Date.now(),
       // Browser chunks are arbitrary byte splits of one stream, not independently
       // parseable pieces, so this path only holds together for the web fallback.
       continuous: true,

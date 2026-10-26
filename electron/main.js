@@ -30,6 +30,8 @@ const medal = require('./medal-import')
 const { autoUpdater } = require('electron-updater')
 const ffmpeg = require('./ffmpeg')
 const native = require('./native-recorder')
+const inputs = require('./input/recorder')
+if (process.env.CLIPPER_TEST_DATA) app.setPath('userData', process.env.CLIPPER_TEST_DATA)
 const { getForegroundWindow, shutdown: shutdownForeground } = require('./foreground')
 
 const DEV_URL = process.env.ELECTRON_RENDERER_URL
@@ -114,6 +116,7 @@ async function createWindow() {
       backgroundThrottling: false,
     },
   })
+  win.webContents.on('render-process-gone', (_event, details) => log.write('renderer', JSON.stringify(details)))
 
   // A window that fills the screen, but still a window: the library and the
   // trim bar both want the width, and a maximized frame can still be restored.
@@ -826,6 +829,7 @@ function watchHotkeys() {
 }
 
 function applyLoginItem(settings) {
+  if (process.env.CLIPPER_TEST_DATA) return
   if (process.platform === 'linux') return
   app.setLoginItemSettings({
     openAtLogin: Boolean(settings.launchOnStartup),
@@ -835,10 +839,15 @@ function applyLoginItem(settings) {
 }
 
 function registerIpc() {
+  if (process.env.CLIPPER_TEST_DATA) {
+    ipcMain.handle('test:quit', () => { app.quit() })
+    ipcMain.handle('test:paths', () => ({ appPath: app.getAppPath(), versions: process.versions }))
+  }
   ipcMain.handle('settings:get', () => store.getSettings())
   ipcMain.handle('settings:save', async (_e, settings) => {
     const saved = await store.saveSettings(settings)
     applyLoginItem(saved)
+    await inputs.configure()
     return saved
   })
 
@@ -888,7 +897,7 @@ function registerIpc() {
    * electron-updater throws rather than saying so.
    */
   function canUpdate() {
-    return app.isPackaged
+    return app.isPackaged && !process.env.CLIPPER_TEST_DATA
   }
 
   ipcMain.handle('update:check', async () => {
@@ -1082,13 +1091,15 @@ function registerIpc() {
   })
 
   /** Everything a freshly written clip needs before it shows up in the library. */
-  async function registerSavedClip({ id, clipsDir, fileName, displayName, createdAt, durationSec, source, format, micFile, note }) {
+  async function registerSavedClip({ id, clipsDir, fileName, displayName, createdAt, durationSec, source, format, micFile, inputTrack, note }) {
     const outPath = path.join(clipsDir, fileName)
     const thumbnail = await ffmpeg.thumbnail(outPath, path.join(clipsDir, '.thumbs', `${id}.jpg`)).catch(() => null)
     const stat = await fs.stat(outPath)
+    const inputsFile = await inputs.save(clipsDir, fileName, inputTrack)
     const meta = {
       id,
       fileName,
+      inputsFile,
       title: clipTitle(displayName, createdAt),
       // Kept separate from `title` so trims can rebuild a name without stacking
       // one date on top of another.
@@ -1160,6 +1171,7 @@ function registerIpc() {
       return await withTemp(async (dir) => {
         const videoTs = path.join(dir, 'video.ts')
         const cut = await native.cut(payload.sessionId, payload.endWall, payload.durationSec, videoTs)
+        const inputTrack = inputs.snapshot(cut.startWall, cut.startWall + cut.dur * 1000)
 
         let audio = null
         if (payload.audio && payload.audio.parts && payload.audio.parts.length) {
@@ -1194,6 +1206,7 @@ function registerIpc() {
           source: payload.source,
           format: 'mp4',
           micFile,
+          inputTrack,
           note: `nativo, ${Date.now() - payload.endWall}ms`,
         })
       })
@@ -1203,6 +1216,9 @@ function registerIpc() {
   })
 
   ipcMain.handle('clips:save', async (_e, payload) => {
+    const inputEnd = payload.inputEndWall || payload.endWall || Date.now()
+    const inputStart = payload.inputStartWall || inputEnd - payload.durationSec * 1000
+    const inputTrack = inputs.snapshot(inputStart, inputEnd)
     const clipsDir = await store.getClipsDir()
     const id = newClipId()
 
@@ -1265,6 +1281,7 @@ function registerIpc() {
         source: payload.source,
         format,
         micFile,
+        inputTrack,
         note: 'chromium',
       })
     } finally {
@@ -1276,6 +1293,10 @@ function registerIpc() {
     const clipsDir = await store.getClipsDir()
     const clip = await store.getClip(id)
     if (clip) {
+      if (clip.inputsFile) {
+        const inputPath = path.join(clipsDir, clip.inputsFile)
+        await shell.trashItem(inputPath).catch(() => fs.rm(inputPath, { force: true }))
+      }
       // Recycle Bin rather than unlink: deleting a clip by accident should be undoable.
       const full = path.join(clipsDir, clip.fileName)
       await shell.trashItem(full).catch(() => fs.rm(full, { force: true }))
@@ -1331,7 +1352,13 @@ function registerIpc() {
       micFile = newMic
     }
 
-    const updated = { ...clip, fileName, micFile }
+    let inputsFile = clip.inputsFile
+    if (inputsFile) {
+      const newInputs = inputs.sidecarName(fileName)
+      await fs.rename(path.join(clipsDir, inputsFile), path.join(clipsDir, newInputs))
+      inputsFile = newInputs
+    }
+    const updated = { ...clip, fileName, micFile, inputsFile }
     await store.upsertClip(updated)
     log.write('biblioteca', `renombrado ${clip.fileName} -> ${fileName}`)
     return updated
@@ -1400,8 +1427,10 @@ function registerIpc() {
         const old = path.join(clipsDir, clip.micFile)
         await shell.trashItem(old).catch(() => fs.rm(old, { force: true }))
       }
+      const inputsFile = await inputs.trim(clipsDir, clip, clip.fileName, startSec, endSec)
       const updated = {
         ...clip,
+        inputsFile,
         durationSec: realDur ? Math.round(realDur) : Math.round(durationSec),
         sizeBytes: stat.size,
         thumbnail: thumbnail ? `${clip.id}.jpg` : null,
@@ -1422,9 +1451,11 @@ function registerIpc() {
     const thumbnail = await ffmpeg.thumbnail(output, path.join(clipsDir, '.thumbs', `${newId}.jpg`)).catch(() => null)
     const stat = await fs.stat(output)
     const realDurNew = await ffmpeg.probeDuration(output).catch(() => null)
+    const inputsFile = await inputs.trim(clipsDir, clip, fileName, startSec, endSec)
     const meta = {
       ...clip,
       id: newId,
+      inputsFile,
       fileName,
       displayName: `${baseName} (recorte)`,
       title: clipTitle(`${baseName} (recorte)`, newDate),
@@ -1622,7 +1653,7 @@ function registerIpc() {
   ipcMain.handle('log:write', (_e, tag, message) => log.write(String(tag), String(message)))
   ipcMain.handle('log:path', () => log.logPath())
   ipcMain.handle('log:open', () => shell.showItemInFolder(log.logPath()))
-  ipcMain.handle('tray:state', (_e, recording, label) => setTrayState(Boolean(recording), label))
+  ipcMain.handle('tray:state', (_e, recording, label) => { inputs.setArmed(recording); setTrayState(Boolean(recording), label) })
 
   // Right-click actions on a clip card.
   ipcMain.handle('clips:menu', async (_e, id) => {
@@ -1663,6 +1694,7 @@ if (!gotLock) {
     registerProtocols()
     setupDisplayMediaHandler()
     registerIpc()
+    await inputs.install({ app, store, ipcMain })
     await store.ensureDirs()
     const startupSettings = await store.getSettings()
     applyLoginItem(startupSettings)
@@ -1693,6 +1725,7 @@ if (!gotLock) {
     quitting = true
     globalShortcut.unregisterAll()
     shutdownForeground()
+    inputs.stop()
     // ffmpeg has to be told to stop, or it keeps writing to the temp folder
     // after we are gone. Hold the quit until it has.
     if (!nativeStopped) {

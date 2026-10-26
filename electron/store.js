@@ -272,6 +272,7 @@ async function enforceDiskLimit() {
       await fs.rm(path.join(clipsDir, '.thumbs', `${clip.id}-strip.jpg`), { force: true })
       await fs.rm(path.join(clipsDir, '.thumbs', `${clip.id}-preview.mp4`), { force: true })
       if (clip.micFile) await fs.rm(path.join(clipsDir, clip.micFile), { force: true })
+      if (clip.inputsFile) await fs.rm(path.join(clipsDir, clip.inputsFile), { force: true })
     } catch {
       /* keep going; a locked file should not stall the cleanup */
     }

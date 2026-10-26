@@ -631,6 +631,8 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
             container: slice.container,
             trimStartSec: slice.trimStartSec,
             continuous: slice.continuous,
+            inputStartWall: slice.inputStartWall,
+            inputEndWall: slice.inputEndWall,
             durationSec: Math.round(slice.durationSec),
             mic,
             endWall,

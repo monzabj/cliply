@@ -9,3 +9,5 @@ contextBridge.exposeInMainWorld('clipper', {
     return () => ipcRenderer.removeListener(channel, handler)
   },
 })
+
+require('./input/player')

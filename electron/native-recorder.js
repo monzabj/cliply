@@ -27,7 +27,7 @@ const SEGMENT_SEC = 2
 // keyframe without re-encoding and the audio can be cut to the same instant.
 const KEYFRAME_SEC = 0.5
 
-const RING_ROOT = path.join(os.tmpdir(), 'clipper-ring')
+const RING_ROOT = path.join(process.env.CLIPPER_TEST_DATA || os.tmpdir(), 'clipper-ring')
 
 function runCapture(args, timeout = 15000) {
   return new Promise((resolve) => {

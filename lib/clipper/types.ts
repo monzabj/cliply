@@ -129,6 +129,8 @@ export interface ClipMeta {
   displayName?: string
   /** Sidecar file holding the microphone as its own editable layer. */
   micFile?: string | null
+  /** Optional input-state sidecar; the video does not contain an overlay. */
+  inputsFile?: string | null
   mix?: AudioMix
 }
 
@@ -147,6 +149,9 @@ export interface SaveClipPayload {
   mic?: AudioLayer | null
   /** When the key was pressed; lets the main process cut the mic on the same clock. */
   endWall?: number
+  /** Actual captured chunk boundaries, used to synchronize the input sidecar. */
+  inputStartWall?: number
+  inputEndWall?: number
 }
 
 /**

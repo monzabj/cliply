@@ -12,6 +12,7 @@ files:
   - package.json
 asarUnpack:
   - node_modules/ffmpeg-static/**
+  - electron/input/InputWorker.exe
 win:
   icon: build/icon.ico
   target:

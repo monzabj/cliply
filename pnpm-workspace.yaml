@@ -3,5 +3,7 @@ minimumReleaseAgeExclude:
   - next
 
 allowBuilds:
+  electron: true
+  electron-builder: true
   electron-winstaller: false
   ffmpeg-static: true
