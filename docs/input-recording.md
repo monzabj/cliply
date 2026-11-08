@@ -11,7 +11,24 @@ New clips get a matching `<name>.inputs.json` beside the video. Open a clip and
 click **Mostrar inputs** to display its keyboard/mouse or controller map.
 The map starts hidden every time a clip is opened. It follows seeking,
 pausing and playback speed, and can switch automatically to the last active
-device. Controls choose the map, Xbox/PlayStation labels and corner placement.
+device. Controls offer three controller drawings: **Clásico · básico** (the
+original), **Xbox · universal** (asymmetric sticks) and **PS5 · DualSense**
+(symmetric sticks). Xbox and PS5 have large analog trigger meters with a
+percentage, highlighted buttons, stick movement and stick clicks.
+
+Choose **Teclado completo** for a physical QWERTY keyboard with function keys,
+navigation, numpad, both modifiers and all five mouse buttons. The compact map
+remains available. Keyboard legends describe physical positions; they are not
+text entered into the game, and can differ from the active keyboard language.
+
+**Posición del mapa** anchors it at either bottom corner. Enable **Mover /
+tamaño** to select and drag the map, or drag its bottom-right handle to resize.
+The size slider also works directly. With the map selected, arrow keys move it
+(Shift moves faster), +/− resize and Escape finishes editing. Position and size
+are relative to the actual video picture, including letterboxing and fullscreen.
+Layout, drawing and size persist locally across restarts. Visibility never
+persists: every clip still opens with its input map hidden. When multiple
+controllers occur in a track, choose one or follow the last active controller.
 
 The video itself stays unchanged. Existing export/copy actions produce a clean
 video without baking in an overlay. To move an editable input track elsewhere,
@@ -22,10 +39,20 @@ it cannot be reconstructed after recording.
 
 - Windows Raw Input captures physical keyboard state, mouse buttons, wheel and
   relative movement, including when a game locks the cursor.
-- XInput captures controller buttons, d-pad, analog sticks and triggers.
-  PlayStation controllers require an XInput output such as DS4Windows or Steam
-  Input. The PlayStation selector changes labels; it is not a controller driver.
-  If several controllers are connected, the first one is displayed.
+- XInput captures standard controller buttons, d-pad, analog sticks and triggers.
+  Its documented API does not expose Xbox Guide/Share or PlayStation PS,
+  touchpad and mute buttons. These appear as unavailable when the track has no
+  data for them, rather than inventing a released state.
+- Native Raw Input also reads Sony DualSense / DualSense Edge HID button
+  reports, including PS, touchpad click and mute when exposed by the device.
+  USB and enhanced Bluetooth reports are supported; Bluetooth basic reports
+  lack mute. Clipper does not change the controller mode or send output reports.
+  HID-hiding drivers can make the physical device unavailable; in that case an
+  XInput output from DS4Windows/Steam Input retains standard controls.
+  Touch gestures, motion sensors, adaptive trigger effects and Edge rear
+  paddles are outside this button map. The pairing button is not a game input.
+- Selecting PS5 changes the drawing and labels, and works with existing
+  XInput tracks. Extra PS buttons require a newly recorded native HID track.
 - The compact keyboard map highlights common movement/action keys and lists
   other held keys below it.
 - The worker runs locally without injecting code into games. Only saved clips
@@ -47,7 +74,7 @@ recorder's keyframe-based cut precision.
 ## Build and tests
 
 Desktop development and packaging scripts automatically compile
-`electron/input/InputWorker.cs` on Windows using the installed .NET Framework
+`electron/input/InputWorker.cs` and `DualSenseInput.cs` on Windows using the installed .NET Framework
 C# compiler. Set `CLIPPER_CSC` to use another compatible compiler. The generated
 executable is ignored by Git and unpacked by electron-builder. Non-Windows
 desktop builds skip it and report input capture as unsupported.
@@ -69,3 +96,15 @@ and synthetic clip, does not touch the user's library or startup settings,
 and saves diagnostics under `.test-artifacts/`. Set `CLIPPER_TEST_NATIVE=1`
 to exercise an actual desktop recording as well. Controller drawings are
 verified with a synthetic track; a physical controller needs a hardware check.
+Unit tests also cover native USB/Bluetooth report parsing and normalized overlay
+placement/clamping. Integration tests cover both stick layouts, pressure meters,
+the full keyboard, drag/resize, persisted settings and hidden-on-reopen behavior.
+
+## Artwork
+
+The bundled controller SVGs are adapted from Al. Lopez's
+[Gamepad Asset Pack](https://github.com/AL2009man/Gamepad-Asset-Pack), MIT license.
+Metadata and author-local paths were removed; the static shapes are animated
+locally by recorded input states. See the bundled
+[license](../electron/input/assets/LICENSE-Gamepad-Asset-Pack.txt) and
+[asset credits](../electron/input/assets/README.md). No runtime download occurs.

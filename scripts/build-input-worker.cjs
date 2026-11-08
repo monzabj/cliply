@@ -19,5 +19,6 @@ execFileSync(compiler, [
   '/nologo', '/optimize+', '/platform:x64', '/target:exe', '/reference:System.Windows.Forms.dll',
   `/out:${path.join(root, 'electron/input/InputWorker.exe')}`,
   path.join(root, 'electron/input/InputWorker.cs'),
+  path.join(root, 'electron/input/DualSenseInput.cs'),
 ], { windowsHide: true, stdio: 'inherit' })
 console.log('Built electron/input/InputWorker.exe')
