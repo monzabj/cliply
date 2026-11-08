@@ -13,20 +13,30 @@ The map starts hidden every time a clip is opened. It follows seeking,
 pausing and playback speed, and can switch automatically to the last active
 device. Controls offer three controller drawings: **Clásico · básico** (the
 original), **Xbox · universal** (asymmetric sticks) and **PS5 · DualSense**
-(symmetric sticks). Xbox and PS5 have large analog trigger meters with a
-percentage, highlighted buttons, stick movement and stick clicks.
+(symmetric sticks). Xbox and PS5 show analog trigger pressure by filling the
+trigger shapes themselves, without external bars or textual percentages.
+Buttons highlight, sticks move and stick clicks are visible.
 
 Choose **Teclado completo** for a physical QWERTY keyboard with function keys,
-navigation, numpad, both modifiers and all five mouse buttons. The compact map
-remains available. Keyboard legends describe physical positions; they are not
+navigation and numpad. **Teclado 60%** keeps the 61-key main block without
+function/nav/numpad sections. **Compacto ampliado** shows 1–6, QWERTY, more keys
+around WASD and common modifiers; **Básico · WASD** preserves the original map.
+Every keyboard layout includes both mouse thumb buttons (M4/M5), alongside
+left/right/middle, wheel and movement. Keyboard legends describe physical positions; they are not
 text entered into the game, and can differ from the active keyboard language.
+
+**Pulsación** selects the highlight color for keys, mouse buttons, controller
+buttons, stick clicks and analog trigger fill. Mint green is the default;
+the reset button restores it. The color persists with the layout, and pressed
+key labels adapt to light/dark colors. These are playback preferences; existing
+input tracks do not need to be recorded again.
 
 **Posición del mapa** anchors it at either bottom corner. Enable **Mover /
 tamaño** to select and drag the map, or drag its bottom-right handle to resize.
 The size slider also works directly. With the map selected, arrow keys move it
 (Shift moves faster), +/− resize and Escape finishes editing. Position and size
 are relative to the actual video picture, including letterboxing and fullscreen.
-Layout, drawing and size persist locally across restarts. Visibility never
+Layout, drawing, highlight color and size persist locally across restarts. Visibility never
 persists: every clip still opens with its input map hidden. When multiple
 controllers occur in a track, choose one or follow the last active controller.
 
@@ -54,7 +64,8 @@ it cannot be reconstructed after recording.
 - Selecting PS5 changes the drawing and labels, and works with existing
   XInput tracks. Extra PS buttons require a newly recorded native HID track.
 - The compact keyboard map highlights common movement/action keys and lists
-  other held keys below it.
+  other held keys below it; the extended/60% maps also list held keys outside
+  their visible area, using readable function/numpad names.
 - The worker runs locally without injecting code into games. Only saved clips
   write input tracks to disk; unsaved history stays in a bounded memory buffer.
 - `%APPDATA%/clipper/input-settings.json` persists the opt-in separately from
@@ -108,3 +119,8 @@ Metadata and author-local paths were removed; the static shapes are animated
 locally by recorded input states. See the bundled
 [license](../electron/input/assets/LICENSE-Gamepad-Asset-Pack.txt) and
 [asset credits](../electron/input/assets/README.md). No runtime download occurs.
+
+The extended keyboard arrangements were informed by the WASD/QWERTY presets in
+[Input Overlay](https://github.com/univrsal/input-overlay/tree/master/presets)
+and [NohBoard](https://github.com/ThoNohT/NohBoard). Clipper draws these maps
+itself; no assets or layout files from those projects are bundled.

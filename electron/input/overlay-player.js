@@ -1,6 +1,7 @@
 const {ipcRenderer}=require('electron')
 const {neutral}=require('./timeline')
-const {text,drawKeyboard,drawPad}=require('./basic-renderer')
+const {drawKeyboard,drawPad}=require('./basic-renderer')
+const {DEFAULT_COLOR}=require('./colors')
 const {createControllerSkin}=require('./controller-skins')
 const {createKeyboardMap}=require('./keyboard-map')
 const {preferences,overlayRect,dragPosition,clamp}=require('./overlay-layout')
@@ -13,30 +14,33 @@ function attachPlayer(video){
   bar.innerHTML=`<button type="button" class="ci-button ci-toggle" aria-pressed="false" disabled>Mostrar inputs</button>
     <select aria-label="Tipo de mapa"><option value="auto">Automático</option><option value="kbm">Teclado y mouse</option><option value="pad">Control</option></select>
     <select aria-label="Estilo de control"><option value="basic">Clásico · básico</option><option value="xbox">Xbox · universal</option><option value="ps">PS5 · DualSense</option></select>
-    <select aria-label="Diseño de teclado"><option value="compact">Teclado compacto</option><option value="full">Teclado completo</option></select>
+    <select aria-label="Diseño de teclado"><option value="compact">Básico · WASD</option><option value="gaming">Compacto ampliado</option><option value="sixty">Teclado 60%</option><option value="full">Teclado completo</option></select>
     <select aria-label="Control grabado"><option value="auto">Control automático</option></select>
     <select aria-label="Posición del mapa"><option value="left">Abajo izquierda</option><option value="right">Abajo derecha</option><option value="free">Personalizada</option></select>
     <button type="button" class="ci-button ci-edit" aria-pressed="false" disabled>Mover / tamaño</button>
     <label class="ci-scale">Tamaño <input type="range" min="20" max="100" step="1" aria-label="Tamaño del mapa"><output></output></label>
+    <label class="ci-color">Pulsación <input type="color" aria-label="Color de pulsación"></label><button type="button" class="ci-button ci-reset-color" aria-label="Restablecer color menta" title="Restablecer color menta">↺</button>
     <span role="status" class="ci-message">Cargando inputs…</span>`
   const overlay=document.createElement('div');overlay.className='ci-overlay';overlay.hidden=true;overlay.tabIndex=-1
   overlay.setAttribute('role','group');overlay.setAttribute('aria-label','Mapa de inputs. Arrastrá para mover; flechas para ajustar y más o menos para cambiar tamaño.')
   const surface=document.createElement('div');surface.className='ci-surface'
   const handle=document.createElement('div');handle.className='ci-resize';handle.setAttribute('aria-hidden','true');handle.title='Arrastrá para cambiar el tamaño'
   overlay.append(surface,handle);stage.prepend(bar);host.append(overlay)
-  const button=bar.querySelector('.ci-toggle'),edit=bar.querySelector('.ci-edit'),message=bar.querySelector('.ci-message'),scale=bar.querySelector('input'),output=bar.querySelector('output')
+  const button=bar.querySelector('.ci-toggle'),edit=bar.querySelector('.ci-edit'),message=bar.querySelector('.ci-message'),scale=bar.querySelector('input[type=range]'),output=bar.querySelector('output'),color=bar.querySelector('input[type=color]')
   const [mode,skin,keyboard,controller,position]=bar.querySelectorAll('select')
   mode.value=prefs.mode;skin.value=prefs.skin;keyboard.value=prefs.keyboard;position.value=prefs.preset
   let src='',track=null,visible=false,editing=false,request=0,raf=0,destroyed=false,renderer=null,renderKey='',kindChanges=[],controllerChanges=[],rect=null,drag=null
   let lastFrame=null,lastTransient=null,lastPad=null,missing=false
   function persist(){try{localStorage.setItem(STORAGE,JSON.stringify(prefs))}catch{}}
-  function sync(){position.value=prefs.preset;scale.value=String(prefs.scale);output.value=`${Math.round(prefs.scale)}%`}
+  function sync(){position.value=prefs.preset;scale.value=String(prefs.scale);output.value=`${Math.round(prefs.scale)}%`;color.value=prefs.color}
   function setEditing(value){editing=value&&visible;overlay.classList.toggle('ci-editing',editing);overlay.tabIndex=editing?0:-1;edit.setAttribute('aria-pressed',String(editing));if(editing)overlay.focus({preventScroll:true})}
   function setVisible(value){visible=value;overlay.hidden=!value;button.textContent=value?'Ocultar inputs':'Mostrar inputs';button.setAttribute('aria-pressed',String(value));edit.disabled=!value;if(!value)setEditing(false);else draw()}
   button.onclick=()=>setVisible(!visible);edit.onclick=()=>setEditing(!editing)
   function changed(){Object.assign(prefs,{mode:mode.value,skin:skin.value,keyboard:keyboard.value,controller:controller.value,preset:position.value});persist();draw()}
   for(const select of [mode,skin,keyboard,controller,position])select.onchange=changed
   scale.oninput=()=>{prefs.scale=Number(scale.value);sync();persist();draw()}
+  color.oninput=()=>{prefs.color=color.value;persist();draw()}
+  bar.querySelector('.ci-reset-color').onclick=()=>{prefs.color=DEFAULT_COLOR;sync();persist();draw()}
   // Editing gestures never reach the video player's seek/pause shortcuts.
   bar.addEventListener('keydown',e=>e.stopPropagation())
   overlay.addEventListener('click',e=>e.stopPropagation())
@@ -95,17 +99,18 @@ function attachPlayer(video){
   }
   function createRenderer(key){
     surface.replaceChildren();renderKey=key;lastFrame=null;lastPad=null;lastTransient=null
-    if(key==='ps'||key==='xbox')renderer=createControllerSkin(key)
-    else if(key==='keyboard')renderer=createKeyboardMap()
+    if(key==='ps'||key==='xbox')renderer=createControllerSkin(key,prefs.color)
+    else if(['full','sixty','gaming'].includes(key))renderer=createKeyboardMap(key,prefs.color)
     else{
       const canvas=document.createElement('canvas');canvas.className='ci-canvas';canvas.width=1020;canvas.height=528
+      canvas.dataset.mouseButtons='0,1,2,3,4'
       const ctx=canvas.getContext('2d');ctx.scale(3,3)
       renderer={root:canvas,ratio:340/176,update(state,transient,kind,pad){
         ctx.clearRect(0,0,340,176);ctx.fillStyle='rgba(12,15,23,.88)';ctx.beginPath();ctx.roundRect(0,0,340,176,14);ctx.fill();ctx.strokeStyle='#68758b66';ctx.stroke()
-        if(kind==='pad')drawPad(ctx,pad?[pad]:[],'xbox');else drawKeyboard(ctx,state,transient)
+        if(kind==='pad')drawPad(ctx,pad?[pad]:[],'xbox',prefs.color);else drawKeyboard(ctx,state,transient,prefs.color)
       }}
     }
-    surface.append(renderer.root)
+    renderer.color=prefs.color;renderer.root.dataset.highlightColor=prefs.color;surface.append(renderer.root)
   }
   function draw(){
     if(!visible||!track||destroyed)return
@@ -113,8 +118,8 @@ function attachPlayer(video){
     const kind=mode.value==='auto'?(change?.kind||(state.pads.length?'pad':'kbm')):mode.value
     const chosen=controller.value==='auto'?frameAt(controllerChanges,time)?.id:Number(controller.value)
     const pad=state.pads.find(p=>p.id===chosen)||(controller.value==='auto'?state.pads[0]:null)
-    const key=kind==='pad'?(skin.value==='basic'?'basic':skin.value):(keyboard.value==='full'?'keyboard':'basic')
-    if(key!==renderKey)createRenderer(key)
+    const key=kind==='pad'?(skin.value==='basic'?'basic':skin.value):(keyboard.value==='compact'?'basic':keyboard.value)
+    if(key!==renderKey||renderer?.color!==prefs.color)createRenderer(key)
     const videoRect=video.getBoundingClientRect(),outer=host.getBoundingClientRect()
     if(!videoRect.width||!videoRect.height)return
     const ratio=video.videoWidth&&video.videoHeight?video.videoWidth/video.videoHeight:videoRect.width/videoRect.height
@@ -130,7 +135,7 @@ function attachPlayer(video){
     const transient=!!f&&time-f.t<100
     if(lastFrame!==f||lastTransient!==transient||lastPad!==pad||renderer.root.clientWidth!==renderer.width||renderer.kind!==kind){
       if(key==='ps'||key==='xbox')renderer.update(pad)
-      else if(key==='keyboard')renderer.update(state,transient)
+      else if(['full','sixty','gaming'].includes(key))renderer.update(state,transient)
       else renderer.update(state,transient,kind,pad)
       renderer.width=renderer.root.clientWidth;renderer.kind=kind;lastFrame=f;lastTransient=transient;lastPad=pad
     }

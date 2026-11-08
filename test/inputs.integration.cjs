@@ -96,8 +96,8 @@ async function main() {
     }
     await fs.writeFile(path.join(clipsDir, 'index.json'), JSON.stringify([saved]))
   }
-  const keyboard = neutral(); keyboard.keys = [87, 65, 160, 112, 97, 269]
-  keyboard.mouse = { buttons: [0], dx: 21, dy: -12, wheel: 120 }
+  const keyboard = neutral(); keyboard.keys = [87, 65, 160, 112, 97, 269, 49, 50, 53]
+  keyboard.mouse = { buttons: [0,3,4], dx: 21, dy: -12, wheel: 120 }
   const controller = neutral()
   controller.pads = [{ id: 0, buttons: 4096 | 512 | 1 | 64, lt: 200, rt: 140, lx: .7, ly: .4, rx: -.3, ry: .5, kind: 'dualsense', extra: { guide: true, touchpad: true, mute: true } }]
   await fs.writeFile(path.join(clipsDir, saved.inputsFile), JSON.stringify({
@@ -108,12 +108,13 @@ async function main() {
   }))
   await page.reload(); await page.waitForSelector('.ci-settings')
   await page.getByRole('button', { name: saved.title, exact: true }).click({ force: true })
-  await page.waitForSelector('.ci-controls button:not([disabled])')
+  await page.waitForSelector('.ci-toggle:not([disabled])')
   assert.equal(await page.locator('.ci-overlay').isVisible(), false)
   const digest = async () => createHash('sha256').update(await fs.readFile(path.join(clipsDir, saved.fileName))).digest('hex')
   const before = await digest()
   await page.locator('.ci-toggle').click()
   assert.equal(await page.locator('.ci-canvas').isVisible(), true)
+  assert.equal(await page.locator('.ci-canvas').getAttribute('data-mouse-buttons'),'0,1,2,3,4')
   const video = page.locator('.clip-stage-video video')
   await video.evaluate(v => { v.pause(); v.currentTime = .6 })
   await pause(150); await page.screenshot({ path: path.join(artifacts, 'keyboard-overlay.png') })
@@ -121,6 +122,18 @@ async function main() {
   await page.locator('[data-keyboard="full"]').waitFor()
   for (const code of keyboard.keys) assert.equal(await page.locator(`[data-key="${code}"]`).getAttribute('data-pressed'), 'true')
   assert.ok(await page.locator('[data-key]').count() >= 104)
+  const customColor='#dd55ff'
+  await page.getByLabel('Color de pulsación').evaluate((input,color)=>{input.value=color;input.dispatchEvent(new Event('input',{bubbles:true}))},customColor)
+  assert.equal(await page.locator('[data-key="87"] rect').getAttribute('fill'),customColor)
+  for(const layout of ['gaming','sixty','full']){
+    await page.getByLabel('Diseño de teclado').selectOption(layout)
+    await page.locator(`[data-keyboard="${layout}"]`).waitFor()
+    for(const code of [49,50,53,87,65,160])assert.equal(await page.locator(`[data-key="${code}"]`).getAttribute('data-pressed'),'true')
+    for(const code of [3,4]){const thumb=page.locator(`[data-mouse-button="${code}"]`);assert.equal(await thumb.getAttribute('data-pressed'),'true');assert.equal(await thumb.getAttribute('fill'),customColor)}
+    if(layout==='sixty'){assert.equal(await page.locator('[data-key]').count(),61);assert.equal(await page.locator('[data-key="112"]').count(),0)}
+    await page.getByLabel('Tamaño del mapa').fill(layout==='full'?'85':'75')
+    await page.screenshot({path:path.join(artifacts,`keyboard-${layout}-color.png`)})
+  }
   await page.getByLabel('Tamaño del mapa').fill('85')
   await page.screenshot({ path: path.join(artifacts, 'keyboard-full.png') })
   await video.evaluate(v => { v.currentTime = 1.8 })
@@ -129,6 +142,9 @@ async function main() {
   await page.locator('[data-skin="xbox"]').waitFor()
   assert.equal(await page.locator('[data-trigger="lt"]').getAttribute('data-value'), '78')
   assert.equal(await page.locator('[data-trigger="rt"]').getAttribute('data-value'), '55')
+  assert.equal(await page.locator('[data-skin="xbox"]').evaluate(svg=>svg.textContent.includes('%')),false,'No external textual trigger percentage')
+  assert.equal(await page.locator('[data-trigger="lt"]').evaluate(n=>n.tagName),'path')
+  assert.equal(await page.locator('[data-skin="xbox"] stop').first().getAttribute('stop-color'),customColor)
   const stickCenters = () => page.locator('[data-stick]').evaluateAll(nodes => ['left','right'].map(side => {const r=nodes.find(n=>n.dataset.stick===side).getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2} }))
   const xboxSticks = await stickCenters()
   await page.screenshot({ path: path.join(artifacts, 'controller-overlay.png') })
@@ -139,6 +155,11 @@ async function main() {
   const psSticks = await stickCenters()
   assert.ok(Math.abs(psSticks[0].y-psSticks[1].y) < 10, 'DualSense sticks are symmetric')
   assert.equal(await page.locator('[data-skin="ps"] [id="path1875"]').getAttribute('data-pressed'), 'true')
+  assert.equal(await page.locator('[data-skin="ps"]').evaluate(svg=>svg.textContent.includes('%')),false)
+  assert.equal(await page.locator('[data-skin="ps"] [id="path1875"]').evaluate(n=>n.style.fill),'rgb(221, 85, 255)')
+  await page.getByRole('button',{name:'Restablecer color menta'}).click()
+  assert.equal(await page.getByLabel('Color de pulsación').inputValue(),'#8cf5b5')
+  await page.getByLabel('Color de pulsación').evaluate((input,color)=>{input.value=color;input.dispatchEvent(new Event('input',{bubbles:true}))},customColor)
   await page.getByLabel('Posición del mapa').selectOption('right')
   await page.screenshot({ path: path.join(artifacts, 'controller-ps5.png') })
   await page.locator('.ci-edit').click()
@@ -168,6 +189,7 @@ async function main() {
   assert.equal(await page.getByLabel('Estilo de control').inputValue(),'ps')
   assert.equal(await page.getByLabel('Posición del mapa').inputValue(),'free')
   assert.equal(await page.getByLabel('Tamaño del mapa').inputValue(),'55')
+  assert.equal(await page.getByLabel('Color de pulsación').inputValue(),customColor)
   await page.locator('.ci-toggle').click();await page.getByLabel('Tipo de mapa').selectOption('pad')
   await page.waitForFunction(()=>document.querySelector('.clip-stage-video video')?.readyState>=2)
   await page.waitForFunction(({x,width})=>{const r=document.querySelector('.ci-overlay').getBoundingClientRect();return Math.abs(r.x-x)<2&&Math.abs(r.width-width)<2},stored)

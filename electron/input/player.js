@@ -18,6 +18,7 @@ function mount() {
     .ci-overlay.ci-editing{pointer-events:auto;cursor:move;outline:2px dashed #9af1b8;outline-offset:0;border-radius:8px;background:#15253455}
     .ci-resize{display:none;position:absolute;right:0;bottom:0;width:24px;height:24px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 45%,#9af1b8 46%,#9af1b8 55%,#16291c 56%);border-radius:3px}
     .ci-editing .ci-resize{display:block}.ci-scale{display:flex;align-items:center;gap:6px}.ci-scale input{width:85px;accent-color:#9af1b8}.ci-scale output{min-width:32px;font-variant-numeric:tabular-nums}
+    .ci-color{display:flex;align-items:center;gap:6px}.ci-color input{width:30px;height:27px;padding:2px;border:1px solid #424550;border-radius:6px;background:#23252d;cursor:pointer}.ci-reset-color{padding:4px 7px}
     .ci-message{font-size:11px}.ci-missing:after{content:attr(data-message);position:absolute;inset:0;display:grid;place-items:center;color:#dce3f1;background:#101723df;border-radius:12px;font:12px system-ui}
   `
   document.head.append(style)

@@ -1,10 +1,11 @@
 const clamp = (n, low, high) => Math.max(low, Math.min(high, n))
-const DEFAULTS = { mode: 'auto', skin: 'basic', keyboard: 'compact', preset: 'left', x: 0, y: 1, scale: 45, controller: 'auto' }
+const {DEFAULT_COLOR,normalizeColor}=require('./colors')
+const DEFAULTS = { mode: 'auto', skin: 'basic', keyboard: 'compact', preset: 'left', x: 0, y: 1, scale: 45, controller: 'auto',color:DEFAULT_COLOR }
 function preferences(value = {}) {
   const pick = (key, choices) => choices.includes(value[key]) ? value[key] : DEFAULTS[key]
   const number = (key, min, max) => Number.isFinite(value[key]) ? clamp(value[key], min, max) : DEFAULTS[key]
   return { mode: pick('mode', ['auto', 'kbm', 'pad']), skin: pick('skin', ['basic', 'xbox', 'ps']),
-    keyboard: pick('keyboard', ['compact', 'full']), preset: pick('preset', ['left', 'right', 'free']),
+    keyboard: pick('keyboard', ['compact', 'gaming', 'sixty', 'full']), preset: pick('preset', ['left', 'right', 'free']),color:normalizeColor(value.color),
     x: number('x', 0, 1), y: number('y', 0, 1), scale: number('scale', 20, 100),
     controller: value.controller === 'auto' || /^\d+$/.test(String(value.controller)) ? String(value.controller) : 'auto' }
 }

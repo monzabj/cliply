@@ -2,9 +2,14 @@ const {test}=require('node:test')
 const assert=require('node:assert/strict')
 const {preferences,overlayRect,dragPosition}=require('../electron/input/overlay-layout')
 test('layout preferences validate corrupt data and preserve user selections',()=>{
-  assert.deepEqual(preferences({skin:'x',scale:NaN,x:-3,y:50,preset:'no'}),{mode:'auto',skin:'basic',keyboard:'compact',preset:'left',scale:45,x:0,y:1,controller:'auto'})
+  assert.deepEqual(preferences({skin:'x',scale:NaN,x:-3,y:50,preset:'no'}),{mode:'auto',skin:'basic',keyboard:'compact',preset:'left',scale:45,x:0,y:1,controller:'auto',color:'#8cf5b5'})
   assert.equal(preferences({skin:'ps',scale:1000,controller:'16'}).skin,'ps')
   assert.equal(preferences({scale:1000}).scale,100)
+})
+test('custom highlight colors are validated and keyboard variants survive restarts',()=>{
+  for(const keyboard of ['gaming','sixty','full','compact'])assert.equal(preferences({keyboard}).keyboard,keyboard)
+  assert.equal(preferences({color:'#DD55FF'}).color,'#dd55ff')
+  assert.equal(preferences({color:'url(file:///private)'}).color,'#8cf5b5')
 })
 test('corner presets stay at the picture bottom, including letterboxing',()=>{
   const picture={left:140,top:23,width:800,height:450}

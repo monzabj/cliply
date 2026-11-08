@@ -12,7 +12,7 @@ Source: https://github.com/AL2009man/Gamepad-Asset-Pack
 
 Adaptations: removed editor metadata, local author paths and unused attributes;
 made the viewBox scalable. Clipper's renderer highlights the individual shapes,
-moves sticks and adds analog trigger meters. All rendering is local.
+moves sticks and fills analog trigger shapes. All rendering is local.
 
 The complete keyboard/mouse map is drawn by Clipper in `keyboard-map.js`.
 Keyboard reference reviewed: https://kenney.nl/assets/input-prompts (CC0).
