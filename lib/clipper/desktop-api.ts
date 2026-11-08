@@ -52,10 +52,10 @@ export function createDesktopAPI(bridge: DesktopBridge): ClipperAPI {
     setMix: (id, mix) => bridge.invoke<ClipMeta | null>('clips:set-mix', id, mix),
     getMicUrl: (clip) => (clip.micFile ? clip.storageDir?`clip://media/${encodeURIComponent(clip.id)}/mic`:`clip://local/${encodeURIComponent(clip.micFile)}` : null),
     getAppAudioUrl: (file,clip) => clip?.storageDir?`clip://media/${encodeURIComponent(clip.id)}/app/${encodeURIComponent(file)}`:`clip://local/${encodeURIComponent(file)}`,
-    getClipUrl: async (clip) => clip.storageDir?`clip://media/${encodeURIComponent(clip.id)}/video?v=${clip.sizeBytes}`:`clip://local/${encodeURIComponent(clip.fileName)}?v=${clip.sizeBytes}`,
+    getClipUrl: async (clip) => clip.storageDir?`clip://media/${encodeURIComponent(clip.id)}/video?v=${clip.mediaRevision || clip.sizeBytes}`:`clip://local/${encodeURIComponent(clip.fileName)}?v=${clip.mediaRevision || clip.sizeBytes}`,
     releaseClipUrl: () => {},
     getThumbnailUrl: (clip) =>
-      clip.thumbnail ? `clip://thumbs/${encodeURIComponent(clip.thumbnail)}?v=${clip.sizeBytes}` : null,
+      clip.thumbnail ? `clip://thumbs/${encodeURIComponent(clip.thumbnail)}?v=${clip.mediaRevision || clip.sizeBytes}` : null,
 
     chooseClipsDir: () => bridge.invoke<string | null>('clips:choose-dir'),
     openClipsDir: () => bridge.invoke('clips:open-dir'),

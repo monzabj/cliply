@@ -38,6 +38,7 @@ const inputs = require('./input/recorder')
 const appAudio = require('./audio/recorder')
 const {normalizeMix} = require('./audio/mix')
 const continuous = require('./continuous')
+const mediaFiles = require('./media-files')
 const {directory:mediaDirectory,mediaPath,cutMarkers}=require('./media-paths')
 const appLayers = (clip, dir) => (clip.audioApps||[]).map(track=>({...track,file:mediaPath(clip,dir,track.file)}))
 let clipBuffersArmed=false
@@ -225,7 +226,8 @@ async function serveFile(filePath, request) {
   const size = stat.size
   const range = request.headers.get('Range')
 
-  const body = (start, end) => Readable.toWeb(createReadStream(filePath, { start, end }))
+  if(mediaFiles.isBlocked(filePath))return new Response(null,{status:503,headers:{'Retry-After':'1'}})
+  const body = (start, end) => Readable.toWeb(mediaFiles.open(filePath, { start, end }, request.signal))
 
   if (range) {
     const m = /bytes=(\d*)-(\d*)/.exec(range)
@@ -715,7 +717,7 @@ const previewQueued = new Set()
 let previewBusy = false
 
 function queuePreview(id) {
-  if (previewQueued.has(id)) return
+  if (previewQueued.has(id)||mediaFiles.isEditing(id)) return
   previewQueued.add(id)
   previewQueue.push(id)
   void drainPreviews()
@@ -728,10 +730,11 @@ async function drainPreviews() {
     while (previewQueue.length) {
       const id = previewQueue.shift()
       try {
+        await mediaFiles.readJob(id,async()=>{
         const clip = await store.getClip(id)
-        if (!clip) continue
+        if (!clip) return
         const clipsDir = await store.getClipsDir()
-        if ((await previewState(clip, clipsDir)).fresh) continue
+        if ((await previewState(clip, clipsDir)).fresh) return
         const started = Date.now()
         await ffmpeg.previewProxy(
           mediaPath(clip,clipsDir),
@@ -742,6 +745,7 @@ async function drainPreviews() {
           clip.recording ? 10 : null,
         )
         log.write('preview', `lista ${clip.fileName} (${Date.now() - started}ms)`)
+        })
       } catch (err) {
         log.write('preview', `fallo ${id}: ${err && err.message}`)
       } finally {
@@ -1085,7 +1089,7 @@ function registerIpc() {
   ipcMain.handle('clips:disk-usage', () => store.diskUsage())
 
   // Scrubbing strip for the player timeline. Built once per clip, then cached.
-  ipcMain.handle('clips:filmstrip', async (_e, id, frames) => {
+  ipcMain.handle('clips:filmstrip', async (_e, id, frames) => mediaFiles.readJob(id, async () => {
     const clip = await store.getClip(id)
     if (!clip) return null
     const clipsDir = await store.getClipsDir()
@@ -1104,7 +1108,7 @@ function registerIpc() {
       log.write('filmstrip', `fallo para ${clip.fileName}: ${err && err.message}`)
       return null
     }
-  })
+  }))
 
   /**
    * Hover previews play a small cached copy (see ffmpeg.previewProxy). Until it
@@ -1359,7 +1363,9 @@ function registerIpc() {
   ipcMain.handle('clips:set-mix', async (_e, id, mix) => {
     const clip = await store.getClip(id)
     if (!clip) return null
-    const updated = { ...clip, mix: normalizeMix(mix,clip.audioApps||[]) }
+    const nextMix=normalizeMix(mix,clip.audioApps||[])
+    if(JSON.stringify(normalizeMix(clip.mix,clip.audioApps||[]))===JSON.stringify(nextMix))return clip
+    const updated = { ...clip, mix: nextMix }
     await store.upsertClip(updated)
     // The preview carries the mix, so it is stale now.
     await fs.rm(path.join(await store.getClipsDir(), '.thumbs', previewName(id)), { force: true }).catch(() => {})
@@ -1445,7 +1451,7 @@ function registerIpc() {
     return updated
   })
 
-  ipcMain.handle('clips:trim', async (_e, { id, startSec, endSec, mode }) => {
+  ipcMain.handle('clips:trim', async (_e, { id, startSec, endSec, mode }) => mediaFiles.edit(id, async () => {
     const clipsDir = await store.getClipsDir()
     const clip = await store.getClip(id)
     if (!clip) throw new Error('Clip not found')
@@ -1463,36 +1469,44 @@ function registerIpc() {
     }
 
     if (mode === 'overwrite') {
-      const tmp = path.join(mediaDirectory(clip,clipsDir), `${clip.id}.trim${ext}`)
-      await cut(tmp)
-      await fs.rename(tmp, input)
-      const thumbnail = await ffmpeg.thumbnail(input, path.join(clipsDir, '.thumbs', `${clip.id}.jpg`)).catch(() => null)
-      const stat = await fs.stat(input)
-      // Measure the result instead of trusting end-start: a range that runs past
-      // the end of the source produces a shorter file than the arithmetic says.
-      const realDur = await ffmpeg.probeDuration(input).catch(() => null)
-      // The levels are now baked into the file, so the layers are gone.
-      if (needsMix && clip.micFile) {
-        const old = mediaPath(clip,clipsDir,clip.micFile)
-        await shell.trashItem(old).catch(() => fs.rm(old, { force: true }))
-      }
-      if(needsMix)for(const track of clip.audioApps||[]){const old=mediaPath(clip,clipsDir,track.file);await shell.trashItem(old).catch(()=>fs.rm(old,{force:true}))}
-      const inputsFile = await inputs.trim(clipsDir, clip, clip.fileName, startSec, endSec)
-      const updated = {
-        ...clip,
-        markers:cutMarkers(clip.markers,startSec,endSec),
-        inputsFile,
-        durationSec: realDur ? Math.round(realDur) : Math.round(durationSec),
-        sizeBytes: stat.size,
-        thumbnail: thumbnail ? `${clip.id}.jpg` : null,
-        micFile: needsMix ? null : clip.micFile,
-        audioApps: [],audioWarning:null,
-        audioBytes:0,
-        mix: { game: 1, mic: 1, gameMuted: false, micMuted: false },
-      }
-      if(updated.markerFile)await fs.writeFile(mediaPath(updated,clipsDir,updated.markerFile),JSON.stringify({version:1,durationSec:realDur||durationSec,markers:updated.markers}))
-      await store.upsertClip(updated)
-      return updated
+      const tmp = path.join(mediaDirectory(clip,clipsDir), `${clip.id}.${newClipId()}.trim${ext}`)
+      try {
+        await cut(tmp)
+        return await mediaFiles.release([input, micPath, ...appLayers(clip,clipsDir).map(t=>t.file),
+          path.join(clipsDir,'.thumbs',previewName(clip.id)), path.join(clipsDir,'.thumbs',`${clip.id}-strip.jpg`), path.join(clipsDir,'.thumbs',`${clip.id}.jpg`)], async()=>{
+          await mediaFiles.replaceFile(tmp,input)
+          await fs.rm(path.join(clipsDir,'.thumbs',previewName(clip.id)),{force:true}).catch(()=>{})
+          await fs.rm(path.join(clipsDir,'.thumbs',`${clip.id}-strip.jpg`),{force:true}).catch(()=>{})
+          const thumbnail = await ffmpeg.thumbnail(input, path.join(clipsDir, '.thumbs', `${clip.id}.jpg`)).catch(() => null)
+          const stat = await fs.stat(input)
+          // Measure the result instead of trusting end-start: a range that runs past
+          // the end of the source produces a shorter file than the arithmetic says.
+          const realDur = await ffmpeg.probeDuration(input).catch(() => null)
+          // The levels are now baked into the file, so the layers are gone.
+          if (needsMix && clip.micFile) {
+            const old = mediaPath(clip,clipsDir,clip.micFile)
+            await shell.trashItem(old).catch(() => fs.rm(old, { force: true }))
+          }
+          if(needsMix)for(const track of clip.audioApps||[]){const old=mediaPath(clip,clipsDir,track.file);await shell.trashItem(old).catch(()=>fs.rm(old,{force:true}))}
+          const inputsFile = await inputs.trim(clipsDir, clip, clip.fileName, startSec, endSec)
+          const updated = {
+            ...clip,
+            mediaRevision:newClipId(),
+            markers:cutMarkers(clip.markers,startSec,endSec),
+            inputsFile,
+            durationSec: realDur || durationSec,
+            sizeBytes: stat.size,
+            thumbnail: thumbnail ? `${clip.id}.jpg` : null,
+            micFile: needsMix ? null : clip.micFile,
+            audioApps: [],audioWarning:null,
+            audioBytes:0,
+            mix: { game: 1, mic: 1, gameMuted: false, micMuted: false },
+          }
+          if(updated.markerFile)await fs.writeFile(mediaPath(updated,clipsDir,updated.markerFile),JSON.stringify({version:1,durationSec:realDur||durationSec,markers:updated.markers}))
+          await store.upsertClip(updated)
+          return updated
+        })
+      } finally { await fs.rm(tmp,{force:true}).catch(()=>{}) }
     }
 
     const newId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -1515,7 +1529,7 @@ function registerIpc() {
       displayName: `${baseName} (recorte)`,
       title: clipTitle(`${baseName} (recorte)`, newDate),
       createdAt: newDate.toISOString(),
-      durationSec: realDurNew ? Math.round(realDurNew) : Math.round(durationSec),
+      durationSec: realDurNew || durationSec,
       sizeBytes: stat.size,
       thumbnail: thumbnail ? `${newId}.jpg` : null,
       micFile: needsMix ? null : clip.micFile,
@@ -1525,7 +1539,7 @@ function registerIpc() {
     }
     await store.upsertClip(meta)
     return meta
-  })
+  }))
 
   ipcMain.handle('clips:choose-dir', async () => {
     const result = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
@@ -1543,7 +1557,7 @@ function registerIpc() {
    * into Discord or a folder. Electron's clipboard cannot express that format,
    * hence the one-shot PowerShell call.
    */
-  ipcMain.handle('clips:copy-file', async (_e, id) => {
+  ipcMain.handle('clips:copy-file', async (_e, id) => mediaFiles.readJob(id, async () => {
     const clip = await store.getClip(id)
     if (!clip) return false
     const clipsDir=await store.getClipsDir()
@@ -1575,15 +1589,14 @@ function registerIpc() {
           resolve(true)
         },
       )
-    })
-  })
+    })  }))
 
   ipcMain.handle('clips:show', async (_e, id) => {
     const clip = await store.getClip(id)
     if (clip) shell.showItemInFolder(mediaPath(clip,await store.getClipsDir()))
   })
 
-  ipcMain.handle('clips:export', async (_e, id, format) => {
+  ipcMain.handle('clips:export', async (_e, id, format) => mediaFiles.readJob(id, async () => {
     const clip = await store.getClip(id)
     if (!clip) return
     const clipsDir = await store.getClipsDir()
@@ -1610,7 +1623,7 @@ function registerIpc() {
     } else {
       await fs.copyFile(input, result.filePath)
     }
-  })
+  }))
 
   ipcMain.handle('hotkeys:register', (_e, hotkeys) => registerHotkeys(hotkeys))
   ipcMain.handle('hotkeys:capture',(_e,listening)=>{clearTimeout(hotkeyCaptureTimer);hotkeyCapture=!!listening;if(hotkeyCapture){globalShortcut.unregisterAll();hotkeyCaptureTimer=setTimeout(()=>{hotkeyCapture=false;void registerHotkeys(clipHotkeys)},20000)}else return registerHotkeys(clipHotkeys)})

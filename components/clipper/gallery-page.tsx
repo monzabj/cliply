@@ -1,6 +1,7 @@
 'use client'
 
 import * as React from 'react'
+import { registerMediaRelease, unloadMedia } from '@/lib/clipper/media-release'
 import { Film, FolderOpen, Image as ImageIcon, Monitor, Play, Search, Volume2, VolumeX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -482,6 +483,14 @@ function ClipCard({ clip, onOpen }: { clip: ClipMeta; onOpen: () => void }) {
     },
     [clearTimers],
   )
+
+  const releaseMedia = React.useCallback(() => {
+    onLeave()
+    unloadMedia(videoRef.current)
+    setSrc(null)
+  }, [onLeave])
+  React.useEffect(() => registerMediaRelease(clip.id, releaseMedia), [clip.id, releaseMedia])
+  React.useEffect(() => { releaseMedia() }, [clip.mediaRevision, clip.fileName, releaseMedia])
 
   const onContextMenu = React.useCallback(
     async (e: React.MouseEvent) => {

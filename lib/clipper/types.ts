@@ -153,6 +153,7 @@ export interface ClipMeta {
   micFile?: string | null
   audioApps?: AppAudioTrack[]
   audioWarning?: string | null
+  mediaRevision?: string
   storageDir?: string | null
   recording?: boolean
   markers?: RecordingMarker[]

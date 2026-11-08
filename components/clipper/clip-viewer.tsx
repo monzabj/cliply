@@ -1,6 +1,8 @@
 'use client'
 
 import * as React from 'react'
+import { flushSync } from 'react-dom'
+import { releaseClipMedia, unloadMedia } from '@/lib/clipper/media-release'
 import { toast } from 'sonner'
 import {
   Calendar,
@@ -125,6 +127,7 @@ export function ClipViewer() {
 
   const videoRef = React.useRef<HTMLVideoElement>(null)
   const stageRef = React.useRef<HTMLDivElement>(null)
+  const loadedSource = React.useRef<string | null>(null)
 
   const [src, setSrc] = React.useState<string | null>(null)
   const [strip, setStrip] = React.useState<string | null>(null)
@@ -139,6 +142,8 @@ export function ClipViewer() {
   const [saveOpen, setSaveOpen] = React.useState(false)
   const [deleteOpen, setDeleteOpen] = React.useState(false)
   const [busy, setBusy] = React.useState<TrimMode | null>(null)
+  const releasing = busy === 'overwrite'
+  const restoreSelection = React.useRef<{ time: number; range: [number, number] } | null>(null)
   const [exporting, setExporting] = React.useState(false)
   const [editingTitle, setEditingTitle] = React.useState(false)
   const [titleDraft, setTitleDraft] = React.useState('')
@@ -147,7 +152,7 @@ export function ClipViewer() {
 
   // Load / release the media URL when the clip changes.
   React.useEffect(() => {
-    if (!api || !clip) {
+    if (!api || !clip || releasing) {
       setSrc(null)
       return
     }
@@ -164,7 +169,7 @@ export function ClipViewer() {
     }
     // sizeBytes changes after an in-place trim and fileName after a rename;
     // either way the URL we hold is stale and has to be rebuilt.
-  }, [api, clip?.id, clip?.sizeBytes, clip?.fileName]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [api, clip?.id, clip?.sizeBytes, clip?.fileName, clip?.mediaRevision, releasing]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // The scrub strip is rendered by ffmpeg on first open and cached from then on.
   React.useEffect(() => {
@@ -183,9 +188,10 @@ export function ClipViewer() {
     return () => {
       cancelled = true
     }
-  }, [api, clip?.id, clip?.sizeBytes, clip?.fileName]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [api, clip?.id, clip?.sizeBytes, clip?.fileName, clip?.mediaRevision]) // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
+    loadedSource.current = null
     setDuration(0)
     setCurrent(0)
     setPlaying(false)
@@ -196,7 +202,7 @@ export function ClipViewer() {
 
   // Persist the levels shortly after the user stops dragging.
   React.useEffect(() => {
-    if (!api || !clip) return
+    if (!api || !clip || busy) return
     const saved = clip.mix ?? DEFAULT_MIX
     const same =
       saved.game === mix.game &&
@@ -208,7 +214,7 @@ export function ClipViewer() {
     if (same) return
     const timer = window.setTimeout(() => { void api.setMix(clip.id, mix).then(() => refreshClips()).catch(() => {}) }, 600)
     return () => window.clearTimeout(timer)
-  }, [api, clip, mix, refreshClips])
+  }, [api, clip, mix, refreshClips, busy])
 
   React.useEffect(() => {
     const el = videoRef.current
@@ -217,31 +223,42 @@ export function ClipViewer() {
 
   const onLoaded = () => {
     const el = videoRef.current
-    if (!el) return
+    if (!el || !el.currentSrc || releasing) return
     const d = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : clip?.durationSec ?? 0
     setDuration(d)
-    setRange([0, d])
+    if (loadedSource.current === el.currentSrc) return
+    loadedSource.current = el.currentSrc
+    el.pause()
+    setPlaying(false)
+    const restore = restoreSelection.current
+    if (restore) {
+      restoreSelection.current = null
+      setRange([Math.min(restore.range[0],d),Math.min(restore.range[1],d)])
+      el.currentTime = Math.min(restore.time,d)
+      setCurrent(el.currentTime)
+    } else setRange([0, d])
   }
 
   // Loop playback inside the trim selection so you hear exactly what you will keep.
   const onTimeUpdate = () => {
     const el = videoRef.current
-    if (!el) return
+    if (!el || busy) return
     setCurrent(el.currentTime)
     // Only loop while actually playing — stepping frame by frame near the end
     // used to snap back to the start of the selection.
     if (!el.paused && el.currentTime >= range[1] - 0.02) {
       el.currentTime = range[0]
-      void el.play()
+      void el.play().catch(() => {})
     }
   }
 
   const togglePlay = () => {
+    if (busy) return
     const el = videoRef.current
     if (!el) return
     if (el.paused) {
       if (el.currentTime < range[0] || el.currentTime >= range[1]) el.currentTime = range[0]
-      void el.play()
+      void el.play().catch(() => {})
     } else el.pause()
   }
 
@@ -302,16 +319,35 @@ export function ClipViewer() {
   const trimmedLength = Math.max(0, range[1] - range[0])
 
   async function handleTrim(mode: TrimMode) {
-    if (!clip) return
-    setBusy(mode)
-    try {
+    if (!clip || busy) return
+    const selection: [number, number] = [...range]
+    const oldTime = videoRef.current?.currentTime ?? current
+    flushSync(() => {
+      setBusy(mode)
+      setPlaying(false)
       videoRef.current?.pause()
+      if (mode === 'overwrite') {
+        loadedSource.current = null
+        releaseClipMedia(clip.id)
+        unloadMedia(videoRef.current)
+        setSrc(null)
+      }
+    })
+    try {
       await api?.setMix(clip.id, mix)
-      const meta = await trimClip({ id: clip.id, startSec: range[0], endSec: range[1], mode })
+      const meta = await trimClip({ id: clip.id, startSec: selection[0], endSec: selection[1], mode })
+      restoreSelection.current = null
+      if (mode === 'overwrite') {
+        setMix(meta.mix ?? DEFAULT_MIX)
+        setDuration(meta.durationSec)
+        setRange([0, meta.durationSec])
+        setCurrent(0)
+      }
       toast.success(mode === 'overwrite' ? t('toast.trimmed') : t('toast.trimmedNew'), { description: meta.title })
       setSaveOpen(false)
       if (mode === 'new') setViewingClipId(meta.id)
     } catch (err) {
+      if (mode === 'overwrite') restoreSelection.current = { time: oldTime, range: selection }
       toast.error(t('toast.trimFailed', { error: err instanceof Error ? err.message : String(err) }))
     } finally {
       setBusy(null)
@@ -337,7 +373,7 @@ export function ClipViewer() {
 
   return (
     <>
-      <Dialog open={!!clip} onOpenChange={(o) => { if (!o) { if (clip && api) void api.setMix(clip.id, mix).then(() => refreshClips()).catch(() => {}); setViewingClipId(null) } }}>
+      <Dialog open={!!clip} onOpenChange={(o) => { if (busy) return; if (!o) { if (clip && api) void api.setMix(clip.id, mix).then(() => refreshClips()).catch(() => {}); setViewingClipId(null) } }}>
         <DialogContent
           className="flex h-[94vh] max-h-[94vh] w-[min(1150px,96vw)] flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
           showCloseButton
@@ -417,7 +453,7 @@ export function ClipViewer() {
                     onTimeUpdate={onTimeUpdate}
                     onPlay={() => setPlaying(true)}
                     onPause={() => setPlaying(false)}
-                    onEnded={() => { const video = videoRef.current; if (video) { video.currentTime = range[0]; void video.play().catch(() => {}) } }}
+                    onEnded={() => { const video = videoRef.current; if (video && !busy) { video.currentTime = range[0]; void video.play().catch(() => {}) } }}
                     onClick={togglePlay}
                     muted={muted}
                     crossOrigin="anonymous"
