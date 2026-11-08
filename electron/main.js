@@ -35,6 +35,9 @@ const identity = require('./source-identity')
 const displayIdentity = require('./display-identity')
 let monitorIdentities = []
 const inputs = require('./input/recorder')
+const appAudio = require('./audio/recorder')
+const {normalizeMix} = require('./audio/mix')
+const appLayers = (clip, dir) => (clip.audioApps||[]).map(track=>({...track,file:path.join(dir,track.file)}))
 if (process.env.CLIPPER_TEST_DATA) app.setPath('userData', process.env.CLIPPER_TEST_DATA)
 const { getForegroundWindow, shutdown: shutdownForeground } = require('./foreground')
 
@@ -49,7 +52,7 @@ app.commandLine.appendSwitch('enable-features', 'WebRtcAllowWgcScreenCapturer,We
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } },
-  { scheme: 'clip', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: true } },
+  { scheme: 'clip', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: true, corsEnabled: true } },
 ])
 
 /** @type {BrowserWindow | null} */
@@ -231,6 +234,7 @@ async function serveFile(filePath, request) {
           'Content-Length': String(end - start + 1),
           'Content-Range': `bytes ${start}-${end}/${size}`,
           'Accept-Ranges': 'bytes',
+          'Access-Control-Allow-Origin': '*',
           'Cache-Control': 'no-cache',
         },
       })
@@ -243,6 +247,7 @@ async function serveFile(filePath, request) {
       'Content-Type': type,
       'Content-Length': String(size),
       'Accept-Ranges': 'bytes',
+      'Access-Control-Allow-Origin': '*',
       'Cache-Control': 'no-cache',
     },
   })
@@ -717,6 +722,7 @@ async function drainPreviews() {
           clip.micFile ? path.join(clipsDir, clip.micFile) : null,
           clip.mix,
           path.join(clipsDir, '.thumbs', previewName(clip.id)),
+          appLayers(clip,clipsDir),
         )
         log.write('preview', `lista ${clip.fileName} (${Date.now() - started}ms)`)
       } catch (err) {
@@ -835,6 +841,7 @@ function registerIpc() {
   if (process.env.CLIPPER_TEST_DATA) {
     ipcMain.handle('test:quit', () => { app.quit() })
     ipcMain.handle('test:kill-native', (_e, id) => native.killForTest(id))
+    ipcMain.handle('test:kill-audio', () => appAudio.killForTest())
     ipcMain.handle('test:hotkey', async (_e, accelerator) => {
       const hotkey = (await store.getSettings()).hotkeys.find(h => h.accelerator === accelerator)
       if (hotkey) send('hotkeys:pressed', { ...hotkey, pressedAt: Date.now() })
@@ -846,6 +853,7 @@ function registerIpc() {
     const saved = await store.saveSettings(settings)
     applyLoginItem(saved)
     await inputs.configure()
+    appAudio.configure(saved)
     return saved
   })
 
@@ -1085,15 +1093,20 @@ function registerIpc() {
   })
 
   /** Everything a freshly written clip needs before it shows up in the library. */
-  async function registerSavedClip({ id, clipsDir, fileName, displayName, createdAt, durationSec, source, format, micFile, inputTrack, note }) {
+  async function registerSavedClip({ id, clipsDir, fileName, displayName, createdAt, durationSec, source, format, micFile, inputTrack, audioSnapshot, note }) {
     const outPath = path.join(clipsDir, fileName)
     const thumbnail = await ffmpeg.thumbnail(outPath, path.join(clipsDir, '.thumbs', `${id}.jpg`)).catch(() => null)
     const stat = await fs.stat(outPath)
     const inputsFile = await inputs.save(clipsDir, fileName, inputTrack)
+    const isolatedAudio = await appAudio.save(clipsDir,fileName,audioSnapshot)
+    const audioFiles=[micFile,...isolatedAudio.audioApps.map(t=>t.file)].filter(Boolean)
+    const audioBytes=(await Promise.all(audioFiles.map(file=>fs.stat(path.join(clipsDir,file)).then(s=>s.size).catch(()=>0)))).reduce((a,b)=>a+b,0)
     const meta = {
       id,
       fileName,
       inputsFile,
+      ...isolatedAudio,
+      audioBytes,
       title: clipTitle(displayName, createdAt),
       // Kept separate from `title` so trims can rebuild a name without stacking
       // one date on top of another.
@@ -1168,6 +1181,7 @@ function registerIpc() {
         const videoTs = path.join(dir, 'video.ts')
         const cut = await native.cut(payload.sessionId, payload.endWall, payload.durationSec, videoTs)
         const inputTrack = inputs.snapshot(cut.startWall, cut.startWall + cut.dur * 1000)
+        const audioSnapshot = appAudio.snapshot(cut.startWall,cut.startWall+cut.dur*1000)
 
         let audio = null
         if (payload.audio && payload.audio.parts && payload.audio.parts.length) {
@@ -1203,6 +1217,7 @@ function registerIpc() {
           format: 'mp4',
           micFile,
           inputTrack,
+          audioSnapshot,
           note: `nativo, ${Date.now() - payload.endWall}ms`,
         })
       })
@@ -1215,6 +1230,7 @@ function registerIpc() {
     const inputEnd = payload.inputEndWall || payload.endWall || Date.now()
     const inputStart = payload.inputStartWall || inputEnd - payload.durationSec * 1000
     const inputTrack = inputs.snapshot(inputStart, inputEnd)
+    const audioSnapshot = appAudio.snapshot(inputStart,inputEnd)
     const clipsDir = await store.getClipsDir()
     const id = newClipId()
 
@@ -1278,6 +1294,7 @@ function registerIpc() {
         format,
         micFile,
         inputTrack,
+        audioSnapshot,
         note: 'chromium',
       })
     } finally {
@@ -1300,6 +1317,7 @@ function registerIpc() {
         const micPath = path.join(clipsDir, clip.micFile)
         await shell.trashItem(micPath).catch(() => fs.rm(micPath, { force: true }))
       }
+      for(const track of clip.audioApps||[]){const file=path.join(clipsDir,track.file);await shell.trashItem(file).catch(()=>fs.rm(file,{force:true}))}
       if (clip.thumbnail) await fs.rm(path.join(clipsDir, '.thumbs', clip.thumbnail), { force: true })
       await fs.rm(path.join(clipsDir, '.thumbs', `${clip.id}-strip.jpg`), { force: true })
       await fs.rm(path.join(clipsDir, '.thumbs', previewName(clip.id)), { force: true })
@@ -1310,7 +1328,7 @@ function registerIpc() {
   ipcMain.handle('clips:set-mix', async (_e, id, mix) => {
     const clip = await store.getClip(id)
     if (!clip) return null
-    const updated = { ...clip, mix }
+    const updated = { ...clip, mix: normalizeMix(mix,clip.audioApps||[]) }
     await store.upsertClip(updated)
     // The preview carries the mix, so it is stale now.
     await fs.rm(path.join(await store.getClipsDir(), '.thumbs', previewName(id)), { force: true }).catch(() => {})
@@ -1354,7 +1372,9 @@ function registerIpc() {
       await fs.rename(path.join(clipsDir, inputsFile), path.join(clipsDir, newInputs))
       inputsFile = newInputs
     }
-    const updated = { ...clip, fileName, micFile, inputsFile }
+    const audioApps=[]
+    for(const track of clip.audioApps||[]){const file=fileName.replace(/\.[^.]+$/,'')+`.app-${track.id}.m4a`;await fs.rename(path.join(clipsDir,track.file),path.join(clipsDir,file));audioApps.push({...track,file})}
+    const updated = { ...clip, fileName, micFile, inputsFile, audioApps }
     await store.upsertClip(updated)
     log.write('biblioteca', `renombrado ${clip.fileName} -> ${fileName}`)
     return updated
@@ -1401,11 +1421,11 @@ function registerIpc() {
     const durationSec = Math.round((endSec - startSec) * 10) / 10
 
     const micPath = clip.micFile ? path.join(clipsDir, clip.micFile) : null
-    const needsMix = Boolean(micPath) || !ffmpeg.isDefaultMix(clip.mix)
+    const needsMix = Boolean(micPath) || !!clip.audioApps?.length || !ffmpeg.isDefaultMix(clip.mix)
     const cut = async (out) => {
       // With a second layer (or non-default levels) the trim also renders the mix,
       // so what you hear in the editor is what the file ends up containing.
-      if (needsMix) await ffmpeg.renderMix(input, micPath, clip.mix, out, { startSec, endSec, video: 'encode' })
+      if (needsMix) await ffmpeg.renderMix(input, micPath, clip.mix, out, { startSec, endSec, video: 'encode', apps: appLayers(clip,clipsDir) })
       else await ffmpeg.trim(input, startSec, endSec, out)
     }
 
@@ -1423,6 +1443,7 @@ function registerIpc() {
         const old = path.join(clipsDir, clip.micFile)
         await shell.trashItem(old).catch(() => fs.rm(old, { force: true }))
       }
+      if(needsMix)for(const track of clip.audioApps||[]){const old=path.join(clipsDir,track.file);await shell.trashItem(old).catch(()=>fs.rm(old,{force:true}))}
       const inputsFile = await inputs.trim(clipsDir, clip, clip.fileName, startSec, endSec)
       const updated = {
         ...clip,
@@ -1431,6 +1452,8 @@ function registerIpc() {
         sizeBytes: stat.size,
         thumbnail: thumbnail ? `${clip.id}.jpg` : null,
         micFile: needsMix ? null : clip.micFile,
+        audioApps: [],audioWarning:null,
+        audioBytes:0,
         mix: { game: 1, mic: 1, gameMuted: false, micMuted: false },
       }
       await store.upsertClip(updated)
@@ -1460,6 +1483,8 @@ function registerIpc() {
       sizeBytes: stat.size,
       thumbnail: thumbnail ? `${newId}.jpg` : null,
       micFile: needsMix ? null : clip.micFile,
+      audioApps: [],audioWarning:null,
+      audioBytes:0,
       mix: { game: 1, mic: 1, gameMuted: false, micMuted: false },
     }
     await store.upsertClip(meta)
@@ -1485,7 +1510,12 @@ function registerIpc() {
   ipcMain.handle('clips:copy-file', async (_e, id) => {
     const clip = await store.getClip(id)
     if (!clip) return false
-    const full = path.join(await store.getClipsDir(), clip.fileName)
+    const clipsDir=await store.getClipsDir()
+    let full = path.join(clipsDir, clip.fileName)
+    if(clip.micFile||clip.audioApps?.length||!ffmpeg.isDefaultMix(clip.mix)){
+      const folder=path.join(app.getPath('temp'),'clipper-shares');await fs.mkdir(folder,{recursive:true})
+      const mixed=path.join(folder,clip.id+path.extname(clip.fileName));await ffmpeg.renderMix(full,clip.micFile?path.join(clipsDir,clip.micFile):null,clip.mix,mixed,{apps:appLayers(clip,clipsDir)});full=mixed
+    }
 
     if (process.platform !== 'win32') {
       clipboard.writeText(full)
@@ -1536,9 +1566,9 @@ function registerIpc() {
     if (result.canceled || !result.filePath) return
 
     const micPath = clip.micFile ? path.join(clipsDir, clip.micFile) : null
-    if (micPath || !ffmpeg.isDefaultMix(clip.mix)) {
+    if (micPath || clip.audioApps?.length || !ffmpeg.isDefaultMix(clip.mix)) {
       // Video is copied, only the audio is rendered, so this stays fast.
-      await ffmpeg.renderMix(input, micPath, clip.mix, result.filePath, { video: 'copy' })
+      await ffmpeg.renderMix(input, micPath, clip.mix, result.filePath, { video: targetExt===currentExt?'copy':'encode', apps:appLayers(clip,clipsDir) })
     } else if (targetExt === 'mp4' && currentExt !== 'mp4') {
       await ffmpeg.toMp4(input, result.filePath)
     } else {
@@ -1649,7 +1679,7 @@ function registerIpc() {
   ipcMain.handle('log:write', (_e, tag, message) => log.write(String(tag), String(message)))
   ipcMain.handle('log:path', () => log.logPath())
   ipcMain.handle('log:open', () => shell.showItemInFolder(log.logPath()))
-  ipcMain.handle('tray:state', (_e, recording, label) => { inputs.setArmed(recording); setTrayState(Boolean(recording), label) })
+  ipcMain.handle('tray:state', (_e, recording, label) => { inputs.setArmed(recording); appAudio.setArmed(recording); setTrayState(Boolean(recording), label) })
 
   // Right-click actions on a clip card.
   ipcMain.handle('clips:menu', async (_e, id) => {
@@ -1692,6 +1722,7 @@ if (!gotLock) {
     setupDisplayMediaHandler()
     registerIpc()
     await inputs.install({ app, store, ipcMain })
+    await appAudio.install({app,store,ipcMain,ffmpeg})
     await store.ensureDirs()
     const startupSettings = await store.getSettings()
     applyLoginItem(startupSettings)
@@ -1726,6 +1757,7 @@ if (!gotLock) {
     globalShortcut.unregisterAll()
     shutdownForeground()
     inputs.stop()
+    appAudio.stop()
     // ffmpeg has to be told to stop, or it keeps writing to the temp folder
     // after we are gone. Hold the quit until it has.
     if (!nativeStopped) {

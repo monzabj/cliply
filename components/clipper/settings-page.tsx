@@ -425,6 +425,11 @@ export function SettingsPage() {
             />
           </Row>
 
+          {isDesktop && <Row label={t('settings.appAudio')} hint={t('settings.appAudioDesc')}>
+            <Switch aria-label={t('settings.appAudio')} checked={settings.captureAppAudio}
+              onCheckedChange={(v) => updateSettings({ captureAppAudio: v })} disabled={!settings.captureSystemAudio} />
+          </Row>}
+
           <Row label={t('settings.mic')} hint={t('settings.micDesc')}>
             <Switch
               checked={settings.captureMic}

@@ -17,6 +17,7 @@ const DEFAULT_SETTINGS = {
   videoBitrateMbps: 12,
   codec: 'auto',
   captureSystemAudio: true,
+  captureAppAudio: true,
   // On by default: without it a clip has one audio layer and the editor cannot
   // balance your voice against the game. The mic stays a separate file either way.
   captureMic: true,
@@ -264,7 +265,7 @@ async function removeShot(id) {
 async function diskUsage() {
   const [clips, shots] = await Promise.all([listClips(), listShots()])
   return (
-    clips.reduce((acc, c) => acc + (c.sizeBytes || 0), 0) +
+    clips.reduce((acc, c) => acc + (c.sizeBytes || 0)+(c.audioBytes||0), 0) +
     shots.reduce((acc, s) => acc + (s.sizeBytes || 0), 0)
   )
 }
@@ -280,7 +281,7 @@ async function enforceDiskLimit() {
 
   const clipsDir = settings.clipsDir
   const clips = await listClips() // newest first
-  let total = clips.reduce((acc, c) => acc + (c.sizeBytes || 0), 0)
+  let total = clips.reduce((acc, c) => acc + (c.sizeBytes || 0)+(c.audioBytes||0), 0)
   if (total <= limitBytes) return 0
 
   let removed = 0
@@ -293,11 +294,12 @@ async function enforceDiskLimit() {
       await fs.rm(path.join(clipsDir, '.thumbs', `${clip.id}-strip.jpg`), { force: true })
       await fs.rm(path.join(clipsDir, '.thumbs', `${clip.id}-preview.mp4`), { force: true })
       if (clip.micFile) await fs.rm(path.join(clipsDir, clip.micFile), { force: true })
+      for(const track of clip.audioApps||[])await fs.rm(path.join(clipsDir,track.file),{force:true})
       if (clip.inputsFile) await fs.rm(path.join(clipsDir, clip.inputsFile), { force: true })
     } catch {
       /* keep going; a locked file should not stall the cleanup */
     }
-    total -= clip.sizeBytes || 0
+    total -= (clip.sizeBytes||0)+(clip.audioBytes||0)
     removed++
     await removeClip(clip.id)
   }

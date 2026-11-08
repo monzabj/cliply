@@ -72,6 +72,8 @@ export interface Settings {
   videoBitrateMbps: number
   codec: Codec
   captureSystemAudio: boolean
+  /** Keep independently editable application soundtracks (Windows). */
+  captureAppAudio: boolean
   captureMic: boolean
   /** Empty means the system default input. */
   micDeviceId: string | null
@@ -118,7 +120,10 @@ export interface AudioMix {
   mic: number
   gameMuted: boolean
   micMuted: boolean
+  apps?: Record<string, { volume: number; muted: boolean }>
 }
+
+export interface AppAudioTrack { id: string; name: string; exe: string; file: string }
 
 export const DEFAULT_MIX: AudioMix = { game: 1, mic: 1, gameMuted: false, micMuted: false }
 
@@ -130,12 +135,16 @@ export interface ClipMeta {
   durationSec: number
   source: ClipSource
   sizeBytes: number
+  /** Extra saved microphone and application audio, counted toward the disk cap. */
+  audioBytes?: number
   thumbnail?: string | null
   format?: ClipFormat
   /** Clean name without the date, used to build file names for trims. */
   displayName?: string
   /** Sidecar file holding the microphone as its own editable layer. */
   micFile?: string | null
+  audioApps?: AppAudioTrack[]
+  audioWarning?: string | null
   /** Optional input-state sidecar; the video does not contain an overlay. */
   inputsFile?: string | null
   mix?: AudioMix
@@ -320,6 +329,7 @@ export const DEFAULT_SETTINGS: Settings = {
   videoBitrateMbps: 12,
   codec: 'auto',
   captureSystemAudio: true,
+  captureAppAudio: true,
   // On: without it a clip has a single audio layer and the editor cannot balance
   // your voice against the game. The mic is always kept as a separate file.
   captureMic: true,

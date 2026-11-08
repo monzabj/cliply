@@ -16,8 +16,6 @@ import {
   Play,
   Scissors,
   Settings2,
-  Mic,
-  MicOff,
   Trash2,
   Volume1,
   Volume2,
@@ -42,6 +40,7 @@ import { useClipper } from '@/lib/clipper/provider'
 import { formatClock, formatDuration, formatTimecode } from '@/lib/clipper/hotkeys'
 import { DEFAULT_MIX, type AudioMix, type TrimMode } from '@/lib/clipper/types'
 import { useT } from '@/lib/i18n'
+import { AudioLayers } from './audio-layers'
 import { TrimBar } from './trim-bar'
 import { formatBytes, useRelativeDate, useTimeLabel } from './gallery-page'
 import { FileNameEditor } from './file-name'
@@ -116,58 +115,8 @@ function ProgressBar({
   )
 }
 
-function LayerControl({
-  icon: Icon,
-  mutedIcon: MutedIcon,
-  label,
-  value,
-  muted,
-  onValue,
-  onMute,
-}: {
-  icon: typeof Volume2
-  mutedIcon: typeof VolumeX
-  label: string
-  value: number
-  muted: boolean
-  onValue: (v: number) => void
-  onMute: () => void
-}) {
-  const Glyph = muted ? MutedIcon : Icon
-  return (
-    <div className="flex items-center gap-2">
-      <button
-        type="button"
-        onClick={onMute}
-        aria-pressed={muted}
-        aria-label={label}
-        className={cn(
-          'flex size-7 items-center justify-center rounded-md transition-colors hover:bg-accent',
-          muted ? 'text-destructive' : 'text-muted-foreground',
-        )}
-      >
-        <Glyph className="size-4" />
-      </button>
-      <span className={cn('w-20 text-xs', muted && 'text-muted-foreground line-through')}>{label}</span>
-      <input
-        type="range"
-        min={0}
-        max={1.5}
-        step={0.05}
-        value={muted ? 0 : value}
-        onChange={(e) => onValue(Number(e.target.value))}
-        aria-label={label}
-        className="range-signal w-28"
-      />
-      <span className="w-10 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
-        {Math.round((muted ? 0 : value) * 100)}%
-      </span>
-    </div>
-  )
-}
-
 export function ClipViewer() {
-  const { api, clips, viewingClipId, setViewingClipId, deleteClip, renameClip, renameClipFile, trimClip, isDesktop } =
+  const { api, clips, viewingClipId, setViewingClipId, deleteClip, renameClip, renameClipFile, trimClip, isDesktop, refreshClips } =
     useClipper()
   const t = useT()
   const relativeOf = useRelativeDate()
@@ -175,7 +124,6 @@ export function ClipViewer() {
   const clip = clips.find((c) => c.id === viewingClipId) ?? null
 
   const videoRef = React.useRef<HTMLVideoElement>(null)
-  const micRef = React.useRef<HTMLAudioElement>(null)
   const stageRef = React.useRef<HTMLDivElement>(null)
 
   const [src, setSrc] = React.useState<string | null>(null)
@@ -196,8 +144,6 @@ export function ClipViewer() {
   const [titleDraft, setTitleDraft] = React.useState('')
   const [mix, setMix] = React.useState<AudioMix>(DEFAULT_MIX)
 
-  const micUrl = clip && api ? api.getMicUrl(clip) : null
-  const hasLayers = Boolean(micUrl)
 
   // Load / release the media URL when the clip changes.
   React.useEffect(() => {
@@ -250,77 +196,24 @@ export function ClipViewer() {
 
   // Persist the levels shortly after the user stops dragging.
   React.useEffect(() => {
-    if (!api || !clip || !hasLayers) return
+    if (!api || !clip) return
     const saved = clip.mix ?? DEFAULT_MIX
     const same =
       saved.game === mix.game &&
       saved.mic === mix.mic &&
       saved.gameMuted === mix.gameMuted &&
-      saved.micMuted === mix.micMuted
+      saved.micMuted === mix.micMuted &&
+      (clip.audioApps ?? []).every(app => (saved.apps?.[app.id]?.volume ?? 1) === (mix.apps?.[app.id]?.volume ?? 1) &&
+        (saved.apps?.[app.id]?.muted ?? false) === (mix.apps?.[app.id]?.muted ?? false))
     if (same) return
-    const timer = window.setTimeout(() => void api.setMix(clip.id, mix), 600)
+    const timer = window.setTimeout(() => { void api.setMix(clip.id, mix).then(() => refreshClips()).catch(() => {}) }, 600)
     return () => window.clearTimeout(timer)
-  }, [api, clip, hasLayers, mix])
-
-  // Apply levels live: master volume scales both layers.
-  React.useEffect(() => {
-    const master = muted ? 0 : volume
-    const v = videoRef.current
-    if (v) v.volume = Math.max(0, Math.min(1, (mix.gameMuted ? 0 : mix.game) * master))
-    const a = micRef.current
-    if (a) a.volume = Math.max(0, Math.min(1, (mix.micMuted ? 0 : mix.mic) * master))
-  }, [mix, volume, muted, src, micUrl])
-
-  /**
-   * The microphone is a separate file, so it has to be driven off the video:
-   * same play state, same position, same rate. A 200 ms drift is corrected
-   * silently; anything smaller is inaudible for voice.
-   */
-  React.useEffect(() => {
-    const v = videoRef.current
-    const a = micRef.current
-    if (!v || !a || !micUrl) return
-
-    const hardSync = () => {
-      if (Number.isFinite(v.currentTime)) a.currentTime = v.currentTime
-    }
-    const softSync = () => {
-      if (Math.abs(a.currentTime - v.currentTime) > 0.2) hardSync()
-    }
-    const onPlay = () => {
-      hardSync()
-      a.playbackRate = v.playbackRate
-      void a.play().catch(() => {})
-    }
-    const onPause = () => a.pause()
-    const onRate = () => {
-      a.playbackRate = v.playbackRate
-    }
-
-    v.addEventListener('play', onPlay)
-    v.addEventListener('pause', onPause)
-    v.addEventListener('seeked', hardSync)
-    v.addEventListener('ratechange', onRate)
-    v.addEventListener('timeupdate', softSync)
-    return () => {
-      v.removeEventListener('play', onPlay)
-      v.removeEventListener('pause', onPause)
-      v.removeEventListener('seeked', hardSync)
-      v.removeEventListener('ratechange', onRate)
-      v.removeEventListener('timeupdate', softSync)
-      a.pause()
-    }
-  }, [micUrl, src])
+  }, [api, clip, mix, refreshClips])
 
   React.useEffect(() => {
     const el = videoRef.current
     if (el) el.playbackRate = speed
   }, [speed, src])
-
-  React.useEffect(() => {
-    const el = videoRef.current
-    if (el) el.volume = volume
-  }, [volume, src])
 
   const onLoaded = () => {
     const el = videoRef.current
@@ -413,6 +306,7 @@ export function ClipViewer() {
     setBusy(mode)
     try {
       videoRef.current?.pause()
+      await api?.setMix(clip.id, mix)
       const meta = await trimClip({ id: clip.id, startSec: range[0], endSec: range[1], mode })
       toast.success(mode === 'overwrite' ? t('toast.trimmed') : t('toast.trimmedNew'), { description: meta.title })
       setSaveOpen(false)
@@ -443,7 +337,7 @@ export function ClipViewer() {
 
   return (
     <>
-      <Dialog open={!!clip} onOpenChange={(o) => !o && setViewingClipId(null)}>
+      <Dialog open={!!clip} onOpenChange={(o) => { if (!o) { if (clip && api) void api.setMix(clip.id, mix).then(() => refreshClips()).catch(() => {}); setViewingClipId(null) } }}>
         <DialogContent
           className="flex max-h-[94vh] w-[min(1150px,96vw)] flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
           showCloseButton
@@ -523,12 +417,13 @@ export function ClipViewer() {
                     onTimeUpdate={onTimeUpdate}
                     onPlay={() => setPlaying(true)}
                     onPause={() => setPlaying(false)}
+                    onEnded={() => { const video = videoRef.current; if (video) { video.currentTime = range[0]; void video.play().catch(() => {}) } }}
                     onClick={togglePlay}
                     muted={muted}
+                    crossOrigin="anonymous"
                     playsInline
                   />
 
-                  {micUrl && <audio ref={micRef} src={micUrl} preload="auto" className="hidden" />}
 
                   <ProgressBar current={current} duration={duration} onSeek={seek} />
                 </div>
@@ -641,30 +536,7 @@ export function ClipViewer() {
                   filmstrip={strip}
                 />
 
-                {hasLayers && (
-                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-lg border bg-surface px-3 py-2">
-                    <span className="text-xs font-medium text-muted-foreground">{t('viewer.layers')}</span>
-                    <LayerControl
-                      icon={Volume2}
-                      mutedIcon={VolumeX}
-                      label={t('viewer.layerGame')}
-                      value={mix.game}
-                      muted={mix.gameMuted}
-                      onValue={(v) => setMix((m) => ({ ...m, game: v, gameMuted: false }))}
-                      onMute={() => setMix((m) => ({ ...m, gameMuted: !m.gameMuted }))}
-                    />
-                    <LayerControl
-                      icon={Mic}
-                      mutedIcon={MicOff}
-                      label={t('viewer.layerMic')}
-                      value={mix.mic}
-                      muted={mix.micMuted}
-                      onValue={(v) => setMix((m) => ({ ...m, mic: v, micMuted: false }))}
-                      onMute={() => setMix((m) => ({ ...m, micMuted: !m.micMuted }))}
-                    />
-                    <span className="ml-auto text-[11px] text-muted-foreground">{t('viewer.layersHint')}</span>
-                  </div>
-                )}
+                {api && <AudioLayers key={clip.id} clip={clip} api={api} mix={mix} setMix={setMix} videoRef={videoRef} src={src} volume={volume} muted={muted} />}
 
                 <div className="flex items-center gap-2">
                   {isTrimmed && (
@@ -695,6 +567,7 @@ export function ClipViewer() {
                       variant="ghost"
                       size="sm"
                       onClick={async () => {
+                        await api?.setMix(clip.id, mix)
                         const okCopy = await api?.copyClipFile(clip.id)
                         if (okCopy) toast.success(t('viewer.copied'))
                         else toast.error(t('viewer.copyFailed'))
@@ -704,7 +577,7 @@ export function ClipViewer() {
                       {t('viewer.copyFile')}
                     </Button>
                   )}
-                  <Button variant="ghost" size="sm" onClick={() => api?.exportClip(clip.id)}>
+                  <Button variant="ghost" size="sm" onClick={async () => { await api?.setMix(clip.id, mix); await api?.exportClip(clip.id) }}>
                     <Download data-icon="inline-start" />
                     {isDesktop ? t('viewer.export') : t('viewer.download')}
                   </Button>
@@ -716,6 +589,7 @@ export function ClipViewer() {
                       onClick={async () => {
                         setExporting(true)
                         try {
+                          await api?.setMix(clip.id, mix)
                           await api?.exportClip(clip.id, 'mp4')
                         } catch (err) {
                           toast.error(

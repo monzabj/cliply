@@ -1,0 +1,41 @@
+const {test}=require('node:test'),assert=require('node:assert/strict')
+const {Decoder,AudioTimeline,windowPcm,RATE}=require('../electron/audio/timeline')
+const {normalizeMix,mixPlan}=require('../electron/audio/mix')
+function pcm(frames,value){const b=Buffer.alloc(frames*4);for(let i=0;i<b.length;i+=2)b.writeInt16LE(value,i);return b}
+test('audio binary IPC survives arbitrary chunk boundaries and rejects oversized packets',()=>{
+  const info={type:'pcm',id:'test',startWall:4},h=Buffer.from(JSON.stringify(info)),b=pcm(3,77),size=Buffer.alloc(8);size.writeUInt32LE(h.length);size.writeUInt32LE(b.length,4)
+  const packet=Buffer.concat([size,h,b]),messages=[],d=new Decoder((i,p)=>messages.push([i,p]))
+  for(let i=0;i<packet.length;i+=3)d.push(packet.subarray(i,i+3))
+  assert.deepEqual(messages,[[info,b]])
+  const huge=Buffer.alloc(8);huge.writeUInt32LE(0xffffffff);assert.throws(()=>new Decoder(()=>{}).push(huge))
+})
+test('per-app windows use actual sound in the clip, pad silence and cut at sample boundaries',()=>{
+  const ring=new AudioTimeline(40000),info=(id,time)=>({id,exe:id+'.exe',startWall:time,peak:.1})
+  ring.push(info('first',1000),pcm(480,111));ring.push(info('later',2000),pcm(480,222))
+  const before=ring.snapshot(995,1015);assert.equal(before.tracks.length,1)
+  const data=windowPcm(before.tracks[0],995,1015)
+  assert.equal(data.length,.02*RATE*4);assert.equal(data.readInt16LE(0),0);assert.equal(data.readInt16LE(240*4),111);assert.equal(data.readInt16LE(720*4),0)
+  const cut=windowPcm(before.tracks[0],1005,1015);assert.equal(cut.readInt16LE(0),111);assert.equal(cut.readInt16LE(240*4),0)
+  assert.equal(ring.snapshot(1020,1900).tracks.length,0)
+})
+test('audio history and memory use are bounded; an in-flight snapshot remains valid',()=>{
+  const ring=new AudioTimeline(20,480*4*2),info=t=>({id:'a',exe:'a.exe',startWall:t,peak:.1})
+  ring.push(info(1000),pcm(480,123));const saved=ring.snapshot(1000,1010)
+  for(let t=1010;t<1200;t+=10)ring.push(info(t),pcm(480,124))
+  assert.ok(ring.bytes<=3840);assert.equal(windowPcm(saved.tracks[0],1000,1010).readInt16LE(0),123)
+  const capped=new AudioTimeline(40000,1920);capped.push(info(0),pcm(480,1));capped.push(info(10),pcm(480,2));assert.ok(capped.snapshot(0,20).problems.length)
+})
+test('app faders multiply the computer master while the microphone stays independent',()=>{
+  const tracks=[{id:'a',file:'a.m4a'},{id:'b',file:'b.m4a'}],mix={game:.5,mic:.8,apps:{a:{volume:1,muted:true},b:{volume:.4,muted:false}}}
+  const plan=mixPlan('video.mp4','mic.m4a',mix,tracks,[],true,30)
+  assert.match(plan.filters,/\[1:a\]volume=0.0000/);assert.match(plan.filters,/\[2:a\]volume=0.2000/);assert.match(plan.filters,/\[3:a\]volume=0.8000/)
+  assert.doesNotMatch(plan.filters,/\[0:a\]/,'full computer mix must not double the isolated apps')
+  assert.deepEqual(normalizeMix({game:500,mic:NaN,apps:{a:{volume:-4},alien:{volume:5}}},tracks),{game:1.5,mic:1,gameMuted:false,micMuted:false,apps:{a:{volume:0,muted:false},b:{volume:1,muted:false}}})
+})
+test('simple mode keeps whole-computer audio and supports a microphone-only clip',()=>{
+  assert.match(mixPlan('v.mp4',null,{},[],[],true,30).filters,/\[0:a\]volume=1.0000/)
+  assert.doesNotMatch(mixPlan('v.mp4','m.m4a',{},[],[],false,30).filters,/\[0:a\]/)
+  assert.match(mixPlan('silent.mp4',null,{},[],[],false,30).filters,/anullsrc/)
+  const unedited=mixPlan('v.mp4','m.m4a',{},[{id:'a',file:'a.m4a'}],[],true,30)
+  assert.match(unedited.filters,/\[0:a\]/);assert.ok(!unedited.inputs.includes('a.m4a'),'Unedited apps keep original full-computer sound')
+})

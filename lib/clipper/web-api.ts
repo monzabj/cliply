@@ -199,6 +199,7 @@ export function createWebAPI(): ClipperAPI {
     getMicUrl() {
       return null
     },
+    getAppAudioUrl() { return null },
     async getFilmstrip() {
       return null
     },

@@ -56,6 +56,7 @@ export interface ClipperAPI {
   setMix(id: string, mix: AudioMix): Promise<ClipMeta | null>
   /** Playable URL for the separate microphone layer, when the clip has one. */
   getMicUrl(clip: ClipMeta): string | null
+  getAppAudioUrl(file: string): string | null
   getClipUrl(clip: ClipMeta): Promise<string>
   releaseClipUrl(url: string): void
   getThumbnailUrl(clip: ClipMeta): string | null

@@ -37,6 +37,7 @@ export function createDesktopAPI(bridge: DesktopBridge): ClipperAPI {
     trimClip: (payload: TrimPayload) => bridge.invoke<ClipMeta>('clips:trim', payload),
     setMix: (id, mix) => bridge.invoke<ClipMeta | null>('clips:set-mix', id, mix),
     getMicUrl: (clip) => (clip.micFile ? `clip://local/${encodeURIComponent(clip.micFile)}` : null),
+    getAppAudioUrl: (file) => `clip://local/${encodeURIComponent(file)}`,
     getClipUrl: async (clip) => `clip://local/${encodeURIComponent(clip.fileName)}?v=${clip.sizeBytes}`,
     releaseClipUrl: () => {},
     getThumbnailUrl: (clip) =>

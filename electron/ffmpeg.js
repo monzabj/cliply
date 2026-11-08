@@ -3,6 +3,7 @@ const { execFile } = require('node:child_process')
 const path = require('node:path')
 const fs = require('node:fs/promises')
 const os = require('node:os')
+const {mixPlan}=require('./audio/mix')
 
 function binary() {
   // ffmpeg-static ships a platform binary; electron-builder unpacks it from the asar.
@@ -12,7 +13,7 @@ function binary() {
 
 function run(args) {
   return new Promise((resolve, reject) => {
-    execFile(binary(), ['-hide_banner', '-loglevel', 'error', ...args], { maxBuffer: 16 * 1024 * 1024 }, (err, _out, stderr) => {
+    execFile(binary(), ['-hide_banner', '-loglevel', 'error', ...args], { maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, _out, stderr) => {
       if (err) reject(new Error(stderr || err.message))
       else resolve()
     })
@@ -141,7 +142,13 @@ async function alignAudioToVideo(videoPath, audioPath) {
 }
 
 const isDefaultMix = (mix) =>
-  !mix || (mix.game === 1 && mix.mic === 1 && !mix.gameMuted && !mix.micMuted)
+  !mix || (mix.game === 1 && mix.mic === 1 && !mix.gameMuted && !mix.micMuted && Object.values(mix.apps||{}).every(a=>a.volume===1&&!a.muted))
+
+function hasAudio(input){return new Promise(resolve=>execFile(binary(),['-hide_banner','-i',input],{windowsHide:true,maxBuffer:1024*1024},(_e,_o,stderr)=>resolve(/Audio:/.test(String(stderr))))) }
+
+async function encodePcm(pcm,outPath){
+  await withTempDir(async dir=>{const raw=path.join(dir,'audio.pcm');await fs.writeFile(raw,pcm);await runLow(['-y','-f','s16le','-ar','48000','-ac','2','-i',raw,'-c:a','aac','-b:a','128k','-threads','1',outPath])})
+}
 
 /**
  * Renders the two audio layers down to one track at the chosen levels.
@@ -149,35 +156,20 @@ const isDefaultMix = (mix) =>
  * a trim needs a real re-encode to land the cut on an exact frame.
  */
 async function renderMix(input, micInput, mix, outPath, opts = {}) {
-  const { startSec, endSec, video = 'copy' } = opts
-  const g = mix && mix.gameMuted ? 0 : mix ? mix.game : 1
-  const m = mix && mix.micMuted ? 0 : mix ? mix.mic : 1
-
-  const args = ['-y']
-  const cut = []
-  if (startSec !== undefined) cut.push('-ss', Number(startSec).toFixed(3))
-  if (endSec !== undefined) cut.push('-to', Number(endSec).toFixed(3))
-
-  args.push(...cut, '-i', input)
-  if (micInput) args.push(...cut, '-i', micInput)
-
-  if (micInput) {
-    args.push(
-      '-filter_complex',
-      `[0:a]volume=${g.toFixed(3)}[a0];[1:a]volume=${m.toFixed(3)}[a1];` +
-        `[a0][a1]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`,
-      '-map', '0:v',
-      '-map', '[aout]',
-    )
-  } else {
-    args.push('-map', '0:v', '-map', '0:a?', '-af', `volume=${g.toFixed(3)}`)
-  }
-
-  if (video === 'copy') args.push('-c:v', 'copy')
-  else args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p')
-
-  args.push('-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', outPath)
-  await run(args)
+  const { startSec, endSec, video = 'copy', apps = [] } = opts
+  const [length,computer]=await Promise.all([probeDuration(input),hasAudio(input)])
+  const duration=Math.max(.001,Math.min(endSec??length??30,length??endSec??30)-(startSec||0))
+  const cut=[]
+  if(startSec!==undefined)cut.push('-ss',Number(startSec).toFixed(3))
+  cut.push('-t',duration.toFixed(3))
+  const plan=mixPlan(input,micInput,mix,apps,cut,computer,duration)
+  const args=['-y',...plan.inputs,'-filter_complex',plan.filters,'-map','0:v','-map','[aout]']
+  if(video==='copy')args.push('-c:v','copy')
+  else if(isMp4(outPath))args.push('-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p')
+  else args.push('-c:v','libvpx-vp9','-deadline','realtime','-cpu-used','8','-crf','30','-b:v','0')
+  args.push('-t',duration.toFixed(3),'-c:a',isMp4(outPath)?'aac':'libopus','-b:a','192k')
+  if(isMp4(outPath))args.push('-movflags','+faststart')
+  args.push(outPath);await run(args)
 }
 
 /** Frame-accurate trim; re-encodes so the cut is exact. */
@@ -285,27 +277,12 @@ function runLow(args) {
  * The mic layer, if any, is mixed in at the clip's levels so the preview sounds
  * like the clip.
  */
-async function previewProxy(input, micInput, mix, outPath) {
+async function previewProxy(input, micInput, mix, outPath, apps = []) {
   await fs.mkdir(path.dirname(outPath), { recursive: true })
   const tmp = outPath.replace(/\.mp4$/i, '.tmp.mp4')
-  const g = mix && mix.gameMuted ? 0 : mix ? mix.game : 1
-  const m = mix && mix.micMuted ? 0 : mix ? mix.mic : 1
-
-  const args = ['-y', '-i', input]
-  if (micInput) args.push('-i', micInput)
-
-  if (micInput) {
-    args.push(
-      '-filter_complex',
-      `[0:a]volume=${g.toFixed(3)}[a0];[1:a]volume=${m.toFixed(3)}[a1];` +
-        `[a0][a1]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`,
-      '-map', '0:v',
-      '-map', '[aout]',
-    )
-  } else {
-    args.push('-map', '0:v', '-map', '0:a?')
-  }
-
+  const [duration,computer]=await Promise.all([probeDuration(input),hasAudio(input)])
+  const plan=mixPlan(input,micInput,mix,apps,[],computer,duration||30)
+  const args=['-y',...plan.inputs,'-filter_complex',plan.filters,'-map','0:v','-map','[aout]']
   args.push(
     '-vf', "scale=-2:'min(360,ih)'",
     // Captures are variable-rate; without this the MP4 muxer settles on 30 fps
@@ -391,6 +368,7 @@ async function thumbnail(input, outPath) {
 }
 
 module.exports = {
+  encodePcm,
   concatAndTrim,
   concatRaw,
   concatAudio,

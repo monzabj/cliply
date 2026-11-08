@@ -22,4 +22,5 @@ node_modules
 
 # Generated Windows input worker and local test artifacts
 /electron/input/InputWorker.exe
+/electron/audio/AudioWorker.exe
 /.test-artifacts/
