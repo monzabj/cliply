@@ -24,7 +24,7 @@ export function TopBar() {
     sessions,
     armAll,
     disarmAll,
-    clipNow,
+    triggerHotkey,
     setPage,
     hotkeyFailures,
     openLog,
@@ -33,6 +33,8 @@ export function TopBar() {
 
   const armed = status === 'armed' || status === 'saving'
   const busy = status === 'starting'
+  const active = armed || busy
+  const recovering = sessions.filter(s => s.status === 'starting' && s.error)
   const pct = Math.min(100, (bufferedSeconds / maxBufferSeconds) * 100)
   const ready = settings.sessions.filter((s) => s.source).length
   const primary = settings.hotkeys.find((h) => h.isDefault) ?? settings.hotkeys[0]
@@ -46,6 +48,12 @@ export function TopBar() {
           <button type="button" onClick={openLog} className="shrink-0 underline underline-offset-2 hover:no-underline">
             {t('top.openLog')}
           </button>
+        </div>
+      )}
+      {recovering.length > 0 && (
+        <div role="status" data-capture-recovering className="flex shrink-0 items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-5 py-2 text-xs">
+          <TriangleAlert className="size-3.5 shrink-0 text-amber-500" aria-hidden />
+          {t('top.recovering', { names: recovering.map(s => s.name).join(' · ') })}
         </div>
       )}
       <header className="relative flex h-16 shrink-0 items-center gap-4 border-b bg-surface/60 px-5">
@@ -71,7 +79,7 @@ export function TopBar() {
           <span className="truncate text-xs text-muted-foreground">
             {armed
               ? sessions
-                  .filter((s) => s.status !== 'idle')
+                  .filter((s) => s.status === 'armed' || s.status === 'saving')
                   .map((s) => s.sourceLabel ?? s.name)
                   .join(' · ')
               : ready
@@ -110,7 +118,7 @@ export function TopBar() {
         {armed && primary && (
           <Button
             variant="outline"
-            onClick={() => clipNow(primary.durationSec, primary.sessionId)}
+            onClick={() => void triggerHotkey(primary)}
             disabled={status === 'saving'}
             className="gap-2"
           >
@@ -121,17 +129,17 @@ export function TopBar() {
         )}
 
         <Button
-          variant={armed ? 'outline' : 'default'}
-          disabled={busy || (!armed && ready === 0)}
+          variant={active ? 'outline' : 'default'}
+          disabled={!active && ready === 0}
           onClick={() => {
-            if (armed) return disarmAll()
+            if (active) return disarmAll()
             if (ready === 0) return setPage('capture')
             void armAll()
           }}
           className={cn(!armed && ready > 0 && 'bg-signal text-signal-foreground hover:bg-signal/90')}
         >
           <Power data-icon="inline-start" />
-          {armed ? t('top.stop') : t('top.start')}
+          {active ? t('top.stop') : t('top.start')}
         </Button>
         </div>
       </header>

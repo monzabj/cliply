@@ -6,19 +6,9 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { useClipper } from '@/lib/clipper/provider'
-import type { CaptureSource, SessionConfig, SourceRef } from '@/lib/clipper/types'
+import type { CaptureSource } from '@/lib/clipper/types'
+import { configureScreens } from '@/electron/source-identity'
 import { useT } from '@/lib/i18n'
-
-function toRef(s: CaptureSource): SourceRef {
-  return {
-    id: s.id,
-    name: s.name,
-    type: s.type,
-    displayId: s.displayId ?? null,
-    width: s.width ?? null,
-    height: s.height ?? null,
-  }
-}
 
 /**
  * First run: confirm which screens this machine has and which of them Clipper
@@ -53,39 +43,7 @@ export function SetupDialog({ open, onClose }: { open: boolean; onClose: () => v
 
   async function finish() {
     const chosen = screens.filter((s) => picked.includes(s.id))
-    const keys = ['F8', 'F9', 'F7', 'F6']
-
-    const sessions: SessionConfig[] = chosen.length
-      ? chosen.map((s, i) => ({
-          id: i === 0 ? 'main' : `s${i}`,
-          // Windows' own name ("Pantalla 2"). Numbering by list order invented a
-          // "Monitor 1" that could be Windows' screen 2, which read as two different 1s.
-          name: s.name,
-          source: toRef(s),
-          autoArm: true,
-        }))
-      : settings.sessions
-
-    const hotkeys = chosen.length
-      ? [
-          ...chosen.map((_, i) => ({
-            id: `hk-${i}`,
-            accelerator: keys[i] ?? '',
-            action: 'clip' as const,
-            durationSec: settings.hotkeys.find((h) => h.action === 'clip')?.durationSec ?? 30,
-            sessionId: sessions[i].id,
-            isDefault: i === 0,
-          })),
-          // One screenshot key, always aimed at the first screen.
-          {
-            id: 'hk-shot',
-            accelerator: 'F7',
-            action: 'shot' as const,
-            durationSec: 0,
-            sessionId: sessions[0].id,
-          },
-        ]
-      : settings.hotkeys
+    const { sessions, hotkeys } = configureScreens(settings, chosen)
 
     await updateSettings({
       sessions,

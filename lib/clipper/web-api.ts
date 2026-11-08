@@ -211,6 +211,9 @@ export function createWebAPI(): ClipperAPI {
     async getPreviewUrl(clip) {
       return this.getClipUrl(clip)
     },
+    nativeStatus: async () => [],
+    recoverNative: async () => {},
+    onSourcesChanged: () => () => {},
     nativeAvailable: async () => false,
     nativeStart: async () => ({ ok: false as const, error: 'browser' }),
     async nativeStop() {},

@@ -9,6 +9,8 @@ import {
   LoaderCircle,
   Monitor as MonitorIcon,
   Plus,
+  Pin,
+  PinOff,
   RefreshCw,
   Star,
   Trash2,
@@ -22,6 +24,7 @@ import { useClipper } from '@/lib/clipper/provider'
 import { acceleratorFromEvent, acceleratorKeys, formatDuration } from '@/lib/clipper/hotkeys'
 import { DURATION_OPTIONS, type Hotkey, type SessionConfig, type UpdateState } from '@/lib/clipper/types'
 import { useT, type TFunction } from '@/lib/i18n'
+import { sourceRef } from '@/electron/source-identity'
 import { formatBytes } from './gallery-page'
 import { MedalImportDialog } from './medal-import'
 
@@ -273,8 +276,7 @@ export function SettingsPage() {
   const setHotkeys = (hotkeys: Hotkey[]) => void updateSettings({ hotkeys })
 
   function addHotkey() {
-    const used = new Set(settings.hotkeys.map((h) => h.durationSec))
-    const durationSec = DURATION_OPTIONS.find((d) => !used.has(d)) ?? 60
+    const durationSec = 30
     setHotkeys([
       ...settings.hotkeys,
       {
@@ -288,7 +290,17 @@ export function SettingsPage() {
   }
 
   function updateHotkey(id: string, patch: Partial<Hotkey>) {
-    setHotkeys(settings.hotkeys.map((h) => (h.id === id ? { ...h, ...patch } : h)))
+    setHotkeys(settings.hotkeys.map(h => {
+      if (h.id !== id) return h
+      const next = { ...h, ...patch }
+      if ('sessionId' in patch || patch.pinned === true) {
+        const source = settings.sessions.find(s => s.id === next.sessionId)?.source
+        next.pinned = source?.type === 'screen' && next.pinned !== false
+        next.target = next.pinned ? sourceRef(source) : null
+      }
+      if (patch.pinned === false) next.target = null
+      return next
+    }))
   }
 
   function removeHotkey(id: string) {
@@ -325,6 +337,7 @@ export function SettingsPage() {
             <div>
               <h2 className="text-sm font-semibold tracking-tight">{t('settings.hotkeys')}</h2>
               <p className="mt-0.5 text-xs text-muted-foreground">{t('settings.hotkeysDesc')}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t('settings.pinHelp')}</p>
             </div>
             <Button variant="outline" size="sm" onClick={addHotkey}>
               <Plus data-icon="inline-start" />
@@ -674,7 +687,7 @@ function HotkeyRow({
     'h-8 min-w-0 rounded-lg border bg-surface px-2 text-sm outline-none transition-colors hover:border-foreground/30 focus-visible:border-ring'
 
   return (
-    <div className="flex items-center gap-2.5 px-4 py-2.5">
+    <div className="grid grid-cols-[7rem_minmax(9rem,1fr)_6rem_auto] items-center gap-2.5 px-4 py-3" data-hotkey={hotkey.accelerator}>
       <button
         type="button"
         onClick={() => setListening(true)}
@@ -708,7 +721,7 @@ function HotkeyRow({
           onChange({ action, durationSec: action === 'clip' ? hotkey.durationSec || 30 : 0 })
         }}
         aria-label={t('settings.action')}
-        className={cn(selectClass, 'w-52 shrink-0')}
+        className={cn(selectClass, 'w-full')}
       >
         <option value="clip">{t('settings.actionClip')}</option>
         <option value="shot">{t('settings.actionShot')}</option>
@@ -732,12 +745,12 @@ function HotkeyRow({
         <span className="w-24 shrink-0" aria-hidden />
       )}
 
-      {showSessions ? (
+      {showSessions || hotkey.pinned ? (
         <select
           value={hotkey.sessionId ?? '__all'}
           onChange={(e) => onChange({ sessionId: e.target.value === '__all' ? null : e.target.value })}
           aria-label={t('settings.target')}
-          className={cn(selectClass, 'flex-1')}
+          className={cn(selectClass, 'col-span-2 col-start-1 row-start-2 w-full')}
         >
           {/* A screenshot of "every screen at once" makes no sense. */}
           {isClip && <option value="__all">{t('settings.allSessions')}</option>}
@@ -749,10 +762,23 @@ function HotkeyRow({
           ))}
         </select>
       ) : (
-        <span className="flex-1" />
+        <span className="col-span-2 col-start-1 row-start-2" />
       )}
 
-      <div className="flex shrink-0 items-center gap-0.5">
+      <button
+        type="button"
+        onClick={() => onChange({ pinned: !hotkey.pinned })}
+        disabled={!hotkey.pinned && sessions.find(s => s.id === hotkey.sessionId)?.source?.type !== 'screen'}
+        aria-pressed={!!hotkey.pinned}
+        aria-label={t(hotkey.pinned ? 'settings.unpin' : 'settings.pin')}
+        title={t('settings.pinHelp')}
+        className={cn('col-span-2 col-start-3 row-start-2 flex items-center justify-center gap-1 whitespace-nowrap rounded-md border px-2 py-1 text-xs disabled:opacity-40', hotkey.pinned && 'border-signal/40 text-signal')}
+      >
+        {hotkey.pinned ? <Pin className="size-3.5" /> : <PinOff className="size-3.5" />}
+        {t(hotkey.pinned ? 'settings.pinned' : 'settings.pin')}
+        {hotkey.pinned && hotkey.target?.width && ` · ${hotkey.target.width}×${hotkey.target.height}`}
+      </button>
+      <div className="col-start-4 row-start-1 flex shrink-0 items-center gap-0.5">
         {isClip ? (
           <button
             type="button"

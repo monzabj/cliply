@@ -15,6 +15,7 @@ const {
   Tray,
   Menu,
   nativeImage,
+  powerMonitor,
 } = require('electron')
 const path = require('node:path')
 const os = require('node:os')
@@ -30,6 +31,9 @@ const medal = require('./medal-import')
 const { autoUpdater } = require('electron-updater')
 const ffmpeg = require('./ffmpeg')
 const native = require('./native-recorder')
+const identity = require('./source-identity')
+const displayIdentity = require('./display-identity')
+let monitorIdentities = []
 const inputs = require('./input/recorder')
 if (process.env.CLIPPER_TEST_DATA) app.setPath('userData', process.env.CLIPPER_TEST_DATA)
 const { getForegroundWindow, shutdown: shutdownForeground } = require('./foreground')
@@ -374,7 +378,7 @@ function uniqueClipName(dir, displayName, date, ext) {
   const base = `${sanitizeName(displayName)}_${timeStamp(date)}`
   let candidate = `${base}.${ext}`
   let n = 2
-  while (require('node:fs').existsSync(path.join(dir, candidate))) {
+  while (require('node:fs').existsSync(path.join(dir, candidate)) || savingFiles.has(candidate)) {
     candidate = `${base}_${n}.${ext}`
     n++
   }
@@ -395,6 +399,8 @@ function displaySizeFor(displayId) {
 function toCaptureSource(s, withThumb) {
   const type = s.id.startsWith('screen') ? 'screen' : 'window'
   const size = type === 'screen' ? displaySizeFor(s.display_id) : { width: null, height: null }
+  const display = type === 'screen' ? screen.getAllDisplays().find(d => String(d.id) === String(s.display_id)) : null
+  const physical = displayIdentity.forDisplay(display, monitorIdentities, screen)
   return {
     id: s.id,
     name: s.name,
@@ -402,6 +408,8 @@ function toCaptureSource(s, withThumb) {
     displayId: s.display_id || null,
     width: size.width,
     height: size.height,
+    devicePath: physical?.devicePath || null,
+    displayLabel: physical?.label || display?.label || null,
     thumbnail: withThumb && s.thumbnail && !s.thumbnail.isEmpty() ? s.thumbnail.toDataURL() : null,
     appIcon: withThumb && s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : null,
   }
@@ -415,30 +423,14 @@ function toCaptureSource(s, withThumb) {
  * caller must tell the user rather than capture a different screen silently.
  */
 function matchSource(sources, ref) {
-  if (ref.displayId) {
-    const byDisplay = sources.find((s) => s.display_id && String(s.display_id) === String(ref.displayId))
-    if (byDisplay) return byDisplay
-  }
-
-  const byId = sources.find((s) => s.id === ref.id)
-  if (byId) return byId
-
-  const wantScreen = ref.type === 'screen'
-  const sameKind = sources.filter((s) => s.id.startsWith('screen') === wantScreen)
-
-  const byName = sameKind.filter((s) => s.name === ref.name)
-  if (byName.length === 1) return byName[0]
-
-  // Last resort for screens: a single display of the same resolution.
-  if (wantScreen && ref.width && ref.height) {
-    const bySize = sameKind.filter((s) => {
-      const size = displaySizeFor(s.display_id)
-      return size.width === ref.width && size.height === ref.height
-    })
-    if (bySize.length === 1) return bySize[0]
-  }
-
-  return null
+  const match = identity.matchSourceIdentity(sources.map(s => toCaptureSource(s, false)), ref)
+  return match ? sources.find(s => s.id === match.id) : null
+}
+async function resolveCaptureSource(ref) {
+  monitorIdentities = await displayIdentity.read()
+  const sources = await desktopCapturer.getSources({ types: ref?.type === 'window' ? ['window'] : ['screen'] })
+  const match = matchSource(sources, ref)
+  return match ? toCaptureSource(match, false) : null
 }
 
 /**
@@ -453,9 +445,10 @@ async function captureStill(sessionSource) {
       ? { width: sessionSource.width, height: sessionSource.height }
       : { width: 3840, height: 2160 }
 
+  monitorIdentities = await displayIdentity.read()
   const sources = await desktopCapturer.getSources({ types, thumbnailSize: size })
   const match = sessionSource ? matchSource(sources, sessionSource) : sources[0]
-  const picked = match || sources[0]
+  const picked = match
   if (!picked || picked.thumbnail.isEmpty()) return null
   return { image: picked.thumbnail, name: picked.name }
 }
@@ -463,12 +456,12 @@ async function captureStill(sessionSource) {
 /**
  * @param {'shot'|'shot-copy'} action  'shot-copy' never writes a file.
  */
-async function takeScreenshot(action, sessionId) {
+async function takeScreenshot(action, sessionId, target = null) {
   const settings = await store.getSettings()
   const session =
     settings.sessions.find((x) => x.id === sessionId) || settings.sessions.find((x) => x.source) || settings.sessions[0]
 
-  const still = await captureStill(session && session.source)
+  const still = await captureStill(target || (session && session.source))
   if (!still) {
     log.write('captura', 'no se pudo capturar: fuente no disponible')
     return { ok: false, reason: 'source' }
@@ -789,7 +782,7 @@ async function registerHotkeys(hotkeys) {
           // Stills are handled here: no renderer round trip, and they work even
           // with the window hidden. The renderer only gets told to play the cue.
           send('shot:started', hk)
-          takeScreenshot(hk.action, hk.sessionId)
+          takeScreenshot(hk.action, hk.sessionId, hk.pinned ? hk.target : null)
             .then((res) => send('shot:done', res))
             .catch((err) => {
               log.write('captura', `fallo: ${err && err.message}`)
@@ -841,6 +834,11 @@ function applyLoginItem(settings) {
 function registerIpc() {
   if (process.env.CLIPPER_TEST_DATA) {
     ipcMain.handle('test:quit', () => { app.quit() })
+    ipcMain.handle('test:kill-native', (_e, id) => native.killForTest(id))
+    ipcMain.handle('test:hotkey', async (_e, accelerator) => {
+      const hotkey = (await store.getSettings()).hotkeys.find(h => h.accelerator === accelerator)
+      if (hotkey) send('hotkeys:pressed', { ...hotkey, pressedAt: Date.now() })
+    })
     ipcMain.handle('test:paths', () => ({ appPath: app.getAppPath(), versions: process.versions }))
   }
   ipcMain.handle('settings:get', () => store.getSettings())
@@ -852,6 +850,7 @@ function registerIpc() {
   })
 
   ipcMain.handle('sources:list', async () => {
+    monitorIdentities = await displayIdentity.read()
     const sources = await desktopCapturer.getSources({
       types: ['screen', 'window'],
       thumbnailSize: { width: 320, height: 180 },
@@ -860,12 +859,7 @@ function registerIpc() {
     return sources.map((s) => toCaptureSource(s, true))
   })
 
-  ipcMain.handle('sources:resolve', async (_e, ref) => {
-    if (!ref) return null
-    const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] })
-    const match = matchSource(sources, ref)
-    return match ? toCaptureSource(match, false) : null
-  })
+  ipcMain.handle('sources:resolve', (_e, ref) => ref ? resolveCaptureSource(ref) : null)
 
   ipcMain.handle('sources:select', (_e, source) => {
     selectedSource = source
@@ -1140,6 +1134,8 @@ function registerIpc() {
 
   // --- native (ffmpeg) screen recording --------------------------------------
 
+  ipcMain.handle('native:status', () => native.statuses())
+  ipcMain.handle('native:recover', (_e, ids) => native.requestRecovery(ids))
   ipcMain.handle('native:available', () => native.available().catch(() => false))
 
   ipcMain.handle('native:start', async (_e, sessionId, opts) => {
@@ -1691,6 +1687,7 @@ if (!gotLock) {
   })
 
   app.whenReady().then(async () => {
+    native.setDisplayResolver(resolveCaptureSource)
     registerProtocols()
     setupDisplayMediaHandler()
     registerIpc()
@@ -1708,11 +1705,14 @@ if (!gotLock) {
     await createTray()
     watchHotkeys()
 
+    for (const event of ['resume', 'unlock-screen']) powerMonitor.on(event, () => {
+      displayIdentity.invalidate(); native.recoverAll(event); send('sources:changed', {})
+    })
     void native.cleanStale()
     // A monitor plugged, unplugged or changing resolution reshuffles the DXGI
     // outputs; the next arm has to look them up again.
     for (const ev of ['display-added', 'display-removed', 'display-metrics-changed']) {
-      screen.on(ev, () => native.invalidateOutputs())
+      screen.on(ev, () => { displayIdentity.invalidate(); native.recoverAll(ev); send('sources:changed', {}) })
     }
   })
 

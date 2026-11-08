@@ -20,6 +20,7 @@ import {
   type SourceRef,
   type TrimPayload,
 } from './types'
+import { matchSourceIdentity, samePhysicalSource, sourceRef, pinHotkeys } from '@/electron/source-identity'
 import { formatDuration } from './hotkeys'
 import { I18nProvider, createT, resolveLanguage, type TFunction } from '@/lib/i18n'
 
@@ -82,6 +83,7 @@ interface ClipperContextValue {
   activeSourceLabel: string | null
 
   clipNow: (durationSec: number, sessionId?: string | null, pressedAt?: number) => Promise<void>
+  triggerHotkey: (hotkey: Hotkey) => Promise<void>
   playCue: () => void
 
   /** Foreground app/game, polled cheaply for the status bar. */
@@ -141,6 +143,9 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
   // same for every screen, so one buffer serves all of them.
   const sysAudioRuntime = React.useRef<AudioRing | null>(null)
   // Whether ffmpeg can record screens on this machine; asked once.
+  const desiredSessions = React.useRef(new Set<string>())
+  const armGeneration = React.useRef(new Map<string, number>())
+  const savingSessions = React.useRef(new Set<string>())
   const nativeOk = React.useRef<Promise<boolean> | null>(null)
   const settingsRef = React.useRef(settings)
   settingsRef.current = settings
@@ -169,19 +174,14 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
   // --- session bookkeeping ---------------------------------------------------
 
   const patchView = React.useCallback((id: string, patch: Partial<SessionView>) => {
-    setViews((prev) => {
-      const base = prev[id] ?? {
-        id,
-        name: id,
-        status: 'idle' as CaptureStatus,
-        sourceLabel: null,
-        bufferedSeconds: 0,
-        bufferedBytes: 0,
-        codec: null,
-        error: null,
-      }
-      return { ...prev, [id]: { ...base, ...patch } }
-    })
+    const base = viewsRef.current[id] ?? {
+      id, name: id, status: 'idle' as CaptureStatus, sourceLabel: null,
+      bufferedSeconds: 0, bufferedBytes: 0, codec: null, error: null,
+    }
+    if (Object.entries(patch).every(([key, value]) => base[key as keyof SessionView] === value)) return
+    const next = { ...viewsRef.current, [id]: { ...base, ...patch } }
+    viewsRef.current = next
+    setViews(next)
   }, [])
 
   // Keep a view row for every configured session, and drop removed ones.
@@ -230,6 +230,7 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
     async (patch: Partial<Settings>) => {
       const current = settingsRef.current
       const next = { ...current, ...patch }
+      next.hotkeys = pinHotkeys(next)
       setSettings(next)
       settingsRef.current = next
       if (api) await api.saveSettings(next)
@@ -241,7 +242,12 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
   const updateSessionRef = React.useCallback(
     (id: string, source: SourceRef) => {
       const s = settingsRef.current
-      void updateSettings({ sessions: s.sessions.map((x) => (x.id === id ? { ...x, source } : x)) })
+      const previous = s.sessions.find(x => x.id === id)?.source
+      void updateSettings({
+        sessions: s.sessions.map(x => x.id === id ? { ...x, source } : x),
+        hotkeys: s.hotkeys.map(h => h.pinned && h.target && (samePhysicalSource(h.target, previous) || matchSourceIdentity([source], h.target))
+          ? { ...h, target: sourceRef(source) } : h),
+      }).catch(err => apiRef.current?.log('ajustes', String(err)))
     },
     [updateSettings],
   )
@@ -387,6 +393,8 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
 
   const disarmSession = React.useCallback(
     (id: string) => {
+      desiredSessions.current.delete(id)
+      armGeneration.current.set(id, (armGeneration.current.get(id) || 0) + 1)
       const rt = runtimes.current.get(id)
       rt?.recorder?.stop()
       if (rt?.native) void apiRef.current?.nativeStop(id)
@@ -400,15 +408,20 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
   const armSession = React.useCallback(
     async (id: string) => {
       if (!api) return
+      desiredSessions.current.add(id)
       const current = viewsRef.current[id]
       if (current && current.status !== 'idle') return
 
       const config = settingsRef.current.sessions.find((s) => s.id === id)
       if (!config) return
 
+      const generation = (armGeneration.current.get(id) || 0) + 1
+      armGeneration.current.set(id, generation)
+      const cancelled = () => armGeneration.current.get(id) !== generation || !desiredSessions.current.has(id)
       patchView(id, { status: 'starting', error: null })
 
       await serialize(async () => {
+        if (cancelled()) return
         const s = settingsRef.current
         try {
           let resolved: CaptureSource | null = null
@@ -428,25 +441,20 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
               // so the stored reference stays fresh and the UI agrees with us.
               const stored = config.source
               const moved =
+                stored.devicePath !== resolved.devicePath || stored.width !== resolved.width || stored.height !== resolved.height ||
                 stored.id !== resolved.id || String(stored.displayId ?? '') !== String(resolved.displayId ?? '')
               if (moved) {
                 api.log('captura', `${config.name}: referencia actualizada (${stored.id} -> ${resolved.id})`)
-                updateSessionRef(id, {
-                  id: resolved.id,
-                  name: resolved.name,
-                  type: resolved.type,
-                  displayId: resolved.displayId ?? null,
-                  width: resolved.width ?? null,
-                  height: resolved.height ?? null,
-                })
+                updateSessionRef(id, sourceRef(resolved)!)
               }
             }
             if (!resolved) {
               const msg = t('toast.sourceMissing', { name: config.source.name })
               patchView(id, { status: 'idle', error: t('capture.unavailable') })
-              toast.error(msg, { duration: 8000 })
+              toast.error(msg, { duration: 8000, id: `source-missing-${id}` })
               return
             }
+            if (cancelled()) return
             await api.selectSource(resolved)
 
             // Screens go to ffmpeg when it can take them: Chromium's capture
@@ -456,6 +464,7 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
               if (await nativeOk.current) {
                 const maxSeconds = maxSecondsFor(id)
                 const started = await api.nativeStart(id, {
+                  sourceRef: sourceRef(resolved)!,
                   displayId: String(resolved.displayId),
                   width: resolved.width,
                   height: resolved.height,
@@ -463,10 +472,12 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
                   bitrateMbps: s.videoBitrateMbps,
                   maxSeconds,
                 })
+                if (cancelled()) { if (started.ok) await api.nativeStop(id); return }
                 if (started.ok) {
                   // Same selected source: the loopback needs a getDisplayMedia call.
                   if (s.captureSystemAudio) await ensureSystemAudio()
                   if (s.captureMic) await ensureMic()
+                  if (cancelled()) { await api.nativeStop(id); releaseAudioIfIdle(); return }
                   runtimes.current.set(id, {
                     recorder: null,
                     stream: null,
@@ -488,11 +499,13 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
             audio: s.captureSystemAudio ? { channelCount: { ideal: 2 } } : false,
           })
 
+          if (cancelled()) { display.getTracks().forEach(track => track.stop()); return }
           // The mic is recorded as its own layer, so the capture stream stays pure
           // game audio and the two can be balanced afterwards.
           const stream = display
           if (s.captureMic) await ensureMic()
 
+          if (cancelled()) { display.getTracks().forEach(track => track.stop()); releaseAudioIfIdle(); return }
           const videoTrack = display.getVideoTracks()[0]
           // Keep the frame rate over sharpness when the encoder is busy.
           videoTrack.contentHint = 'motion'
@@ -529,17 +542,20 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
           videoTrack.addEventListener('ended', () => {
             toast(t('toast.sourceClosed'))
             disarmSession(id)
+            if (api.isDesktop) desiredSessions.current.add(id)
           })
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
-          patchView(id, { status: 'idle' })
+          if (cancelled()) return
+          nativeOk.current = null
+          patchView(id, { status: 'idle', error: message, bufferedSeconds: 0, bufferedBytes: 0 })
           if (!/permission|abort|not ?allowed/i.test(message)) {
             toast.error(t('toast.captureFailed', { error: message }))
           }
         }
       })
     },
-    [api, disarmSession, ensureMic, ensureSystemAudio, maxSecondsFor, patchView, serialize, t, updateSessionRef],
+    [api, disarmSession, ensureMic, ensureSystemAudio, maxSecondsFor, patchView, releaseAudioIfIdle, serialize, t, updateSessionRef],
   )
 
   const armAll = React.useCallback(async () => {
@@ -547,7 +563,7 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
   }, [armSession])
 
   const disarmAll = React.useCallback(() => {
-    for (const id of [...runtimes.current.keys()]) disarmSession(id)
+    for (const id of new Set([...runtimes.current.keys(), ...desiredSessions.current])) disarmSession(id)
   }, [disarmSession])
 
   // armSession refuses while the view still says "armed"; give the disarm a
@@ -576,9 +592,10 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
       if (!api) return
       // The clip ends when the key went down, not when we got round to it.
       const endWall = pressedAt ?? Date.now()
+      if (sessionId === null ? savingSessions.current.size > 0 : savingSessions.current.has(sessionId)) return
 
       const targets = [...runtimes.current.entries()].filter(
-        ([id, rt]) => (rt.recorder || rt.native) && (sessionId === null || id === sessionId),
+        ([id, rt]) => !savingSessions.current.has(id) && (rt.recorder || rt.native) && (sessionId === null || id === sessionId),
       )
 
       if (!targets.length) {
@@ -586,11 +603,22 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
         // recording now — the moment itself is lost, but the next one is not.
         api.log('clip', 'hotkey recibida SIN sesiones armadas: armando ahora')
         toast.warning(t('toast.notArmedArming'))
-        const ready = settingsRef.current.sessions.filter((s) => s.source)
+        const ready = settingsRef.current.sessions.filter(s => s.source && (sessionId === null || s.id === sessionId))
         for (const s of ready) await armSession(s.id)
         return
       }
 
+      if (targets.some(([, rt]) => rt.native)) {
+        const health = await api.nativeStatus()
+        const unavailable = targets.filter(([id, rt]) => rt.native && health.find(h => h.sessionId === id)?.status !== 'recording')
+        if (unavailable.length) {
+          for (const [id] of unavailable) patchView(id, { status: 'starting', bufferedSeconds: 0, bufferedBytes: 0, error: t('toast.captureRecovering') })
+          await api.recoverNative(unavailable.map(([id]) => id))
+          toast.warning(t('toast.captureRecovering'))
+          return
+        }
+      }
+      targets.forEach(([id]) => savingSessions.current.add(id))
       // Immediate feedback: the point of the cue is to confirm the key registered,
       // so it has to fire before any of the saving work starts.
       playCue()
@@ -660,9 +688,10 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
         const message = err instanceof Error ? err.message : String(err)
         // Mid-game a toast is invisible, so the reason has to reach the log too.
         api.log('clip', `FALLO al guardar: ${message}`)
-        toast.error(t('toast.saveFailed', { error: message }), { id: savingToast })
+        if (message.includes('CAPTURE_RECOVERING')) toast.warning(t('toast.captureRecovering'), { id: savingToast })
+        else toast.error(t('toast.saveFailed', { error: message }), { id: savingToast })
       } finally {
-        targets.forEach(([id]) => patchView(id, { status: runtimes.current.has(id) ? 'armed' : 'idle' }))
+        targets.forEach(([id]) => { savingSessions.current.delete(id); patchView(id, { status: runtimes.current.has(id) ? 'armed' : 'idle' }) })
       }
     },
     [api, armSession, mutate, patchView, playCue, t],
@@ -671,14 +700,38 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
   const clipNowRef = React.useRef(clipNow)
   clipNowRef.current = clipNow
 
+  const triggerHotkey = React.useCallback(async (hotkey: Hotkey) => {
+    if (!api) return
+    const pressedAt = hotkey.pressedAt ?? Date.now()
+    try {
+      let sessionId = hotkey.sessionId ?? null
+      if (hotkey.pinned && hotkey.target) {
+        const resolved = await api.resolveSource(hotkey.target)
+        if (!resolved) { toast.warning(t('toast.pinnedMissing', { key: hotkey.accelerator })); return }
+        const settings = settingsRef.current
+        const configured = settings.sessions.map(s => ({ ...s.source, session: s })).filter(s => s.type)
+        const matched = matchSourceIdentity(configured, resolved)
+        let config = matched?.session as SessionConfig | undefined
+        if (!config) {
+          if (settings.sessions.length >= MAX_SESSIONS) { toast.warning(t('toast.pinnedMissing', { key: hotkey.accelerator })); return }
+          const id = settings.sessions.some(s => s.id === sessionId) || !sessionId ? `pinned-${hotkey.id}` : sessionId
+          config = { id, name: resolved.displayLabel || `${resolved.width}×${resolved.height}`, source: sourceRef(resolved), autoArm: true }
+          await updateSettings({ sessions: [...settings.sessions, config] })
+        }
+        sessionId = config.id
+        const rt = runtimes.current.get(sessionId)
+        if (rt && !matchSourceIdentity([rt.source].filter(Boolean), resolved)) disarmSession(sessionId)
+        if (!runtimes.current.has(sessionId)) await armSession(sessionId)
+      }
+      api.log('clip', `hotkey ${hotkey.accelerator} en la interfaz (sesion=${sessionId ?? 'todas'})`)
+      await clipNowRef.current(hotkey.durationSec, sessionId, pressedAt)
+    } catch (err) { api.log('clip', String(err)); toast.error(t('toast.saveFailed', { error: String(err) })) }
+  }, [api, armSession, disarmSession, t, updateSettings])
+
   React.useEffect(() => {
     if (!api) return
-    return api.onHotkey((hotkey: Hotkey) => {
-      const armedNow = runtimes.current.size
-      api.log('clip', `hotkey ${hotkey.accelerator} en la interfaz (sesiones armadas: ${armedNow})`)
-      void clipNowRef.current(hotkey.durationSec, hotkey.sessionId ?? null, hotkey.pressedAt)
-    })
-  }, [api])
+    return api.onHotkey(hotkey => { void triggerHotkey(hotkey) })
+  }, [api, triggerHotkey])
 
   // Poll the foreground app for the status bar. The main process caches by pid,
   // so repeat polls on an unchanged window cost about a millisecond. Skipped while
@@ -740,34 +793,55 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
     }
   }, [api, playCue, t, mutateShots])
 
-  // Tick buffer indicators while anything is armed.
-  const anyArmed = Object.values(views).some((v) => v.status === 'armed' || v.status === 'saving')
+  // Read native progress from ffmpeg. Wall time since arming is not evidence
+  // that any video was captured (locked desktops can stay unavailable for hours).
   React.useEffect(() => {
-    if (!anyArmed) return
-    // Only push state when a displayed number actually changes: the UI shows whole
-    // seconds and whole megabytes, so re-rendering the tree twice a second while
-    // recording is pure waste.
-    const lastShown = new Map<string, string>()
-    const timer = setInterval(() => {
-      for (const [id, rt] of runtimes.current) {
-        let bufferedSeconds: number
-        let bufferedBytes: number
-        if (rt.native) {
-          // The native buffer is a fixed ring on disk: it fills, then holds.
-          bufferedSeconds = Math.min(rt.native.maxSeconds, (Date.now() - rt.native.armedAt) / 1000)
-          bufferedBytes = (bufferedSeconds * rt.native.bitrateMbps * 1_000_000) / 8
-        } else if (rt.recorder) {
-          bufferedSeconds = rt.recorder.bufferedSeconds
-          bufferedBytes = rt.recorder.bufferedBytes
-        } else continue
-        const key = `${Math.floor(bufferedSeconds)}|${Math.round(bufferedBytes / 1048576)}`
-        if (lastShown.get(id) === key) continue
-        lastShown.set(id, key)
-        patchView(id, { bufferedSeconds, bufferedBytes })
-      }
-    }, 500)
-    return () => clearInterval(timer)
-  }, [anyArmed, patchView])
+    if (!api) return
+    let disposed = false, pending = false, retryAt = 0
+    const tick = async () => {
+      if (disposed || pending) return
+      pending = true
+      try {
+        const health = api.isDesktop ? await api.nativeStatus() : []
+        if (disposed) return
+        for (const [id, rt] of runtimes.current) {
+          if (rt.native) {
+            const h = health.find(h => h.sessionId === id)
+            const recording = h?.status === 'recording'
+            if (h?.source) rt.source = h.source
+            patchView(id, {
+              status: savingSessions.current.has(id) ? 'saving' : recording ? 'armed' : 'starting',
+              bufferedSeconds: h?.bufferedSeconds || 0, bufferedBytes: h?.bufferedBytes || 0,
+              error: recording ? null : t('toast.captureRecovering'),
+            })
+          } else if (rt.recorder) patchView(id, {
+            bufferedSeconds: rt.recorder.bufferedSeconds, bufferedBytes: rt.recorder.bufferedBytes,
+          })
+        }
+        if (api.isDesktop && Date.now() >= retryAt) {
+          retryAt = Date.now() + 10000
+          for (const id of desiredSessions.current) {
+            if (!runtimes.current.has(id) && viewsRef.current[id]?.status === 'idle') {
+              nativeOk.current = null
+              void armSession(id)
+            }
+          }
+        }
+      } catch (error) { api.log('captura', `estado: ${String(error)}`) }
+      finally { pending = false }
+    }
+    void tick()
+    const timer = setInterval(tick, 1000)
+    return () => { disposed = true; clearInterval(timer) }
+  }, [api, armSession, patchView, t])
+
+  React.useEffect(() => {
+    if (!api) return
+    return api.onSourcesChanged(() => {
+      nativeOk.current = null
+      void refreshSources()
+    })
+  }, [api, refreshSources])
 
   // --- session config editing ------------------------------------------------
 
@@ -814,8 +888,8 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
       // Drop a key that existed only for this session; re-point anything the user
       // set up themselves so no hotkey is left aiming at nothing.
       const hotkeys = s.hotkeys
-        .filter((h) => h.id !== `hk-${id}`)
-        .map((h) => (h.sessionId === id ? { ...h, sessionId: fallback } : h))
+        .filter((h) => h.pinned || h.id !== `hk-${id}`)
+        .map((h) => (!h.pinned && h.sessionId === id ? { ...h, sessionId: fallback } : h))
       const withDefault = hotkeys.length && !hotkeys.some((h) => h.isDefault)
         ? [{ ...hotkeys[0], isDefault: true }, ...hotkeys.slice(1)]
         : hotkeys
@@ -920,6 +994,7 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
     maxBufferSeconds: maxBufferSeconds + SEGMENT_SEC,
     activeSourceLabel: armedSessions.map((v) => v.sourceLabel).filter(Boolean).join(' · ') || null,
     clipNow,
+    triggerHotkey,
     playCue,
     currentGame,
     hotkeyFailures,

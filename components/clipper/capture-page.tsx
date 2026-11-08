@@ -9,35 +9,10 @@ import { cn } from '@/lib/utils'
 import { useClipper, type SessionView } from '@/lib/clipper/provider'
 import { formatDuration } from '@/lib/clipper/hotkeys'
 import { MAX_SESSIONS, type CaptureSource, type SessionConfig, type SourceRef } from '@/lib/clipper/types'
+import { matchSourceIdentity, sourceRef } from '@/electron/source-identity'
 import { useT } from '@/lib/i18n'
 
-function toRef(s: CaptureSource): SourceRef {
-  return {
-    id: s.id,
-    name: s.name,
-    type: s.type,
-    displayId: s.displayId ?? null,
-    width: s.width ?? null,
-    height: s.height ?? null,
-  }
-}
-
-/**
- * Same physical screen, matched the way the main process does it.
- *
- * Neither identifier is dependable on its own: Windows renumbers the capture id
- * when the display set changes, and it renumbers the display id between runs on
- * machines with a virtual display driver. Any one of them matching is enough,
- * which is why this walks the whole chain instead of trusting the first.
- */
-function sameSource(ref: SourceRef | null, source: CaptureSource) {
-  if (!ref) return false
-  if (ref.displayId && source.displayId && String(ref.displayId) === String(source.displayId)) return true
-  if (ref.id === source.id) return true
-  if (ref.type !== source.type) return false
-  if (ref.name && ref.name === source.name) return true
-  return Boolean(ref.width && ref.height && ref.width === source.width && ref.height === source.height)
-}
+const toRef = (source: CaptureSource): SourceRef => sourceRef(source)!
 
 export function CapturePage() {
   const {
@@ -61,6 +36,7 @@ export function CapturePage() {
   const screens = sources.filter((s) => s.type === 'screen')
   const windows = sources.filter((s) => s.type === 'window')
 
+  const sameSource = (ref: SourceRef | null, source: CaptureSource) => matchSourceIdentity(sources, ref)?.id === source.id
   const findSession = (source: CaptureSource) => settings.sessions.find((x) => sameSource(x.source, source)) ?? null
   const atLimit = settings.sessions.length >= MAX_SESSIONS
 

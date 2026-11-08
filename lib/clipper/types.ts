@@ -6,7 +6,9 @@ export interface CaptureSource {
   type: SourceType
   thumbnail?: string | null
   appIcon?: string | null
-  /** Stable across reboots and display hot-plug; only present for screens. */
+  /** Physical device interface and label; only present for screens. */
+  devicePath?: string | null
+  displayLabel?: string | null
   displayId?: string | null
   width?: number | null
   height?: number | null
@@ -15,12 +17,14 @@ export interface CaptureSource {
 /**
  * A persisted pointer to a capture source. `id` goes stale whenever Windows
  * renumbers displays (adding a monitor, a virtual display driver waking up), so
- * matching falls back to displayId, then name + resolution. See resolveSource.
+ * matching uses physical identity, compatible displayId and unique resolution.
  */
 export interface SourceRef {
   id: string
   name: string
   type: SourceType
+  devicePath?: string | null
+  displayLabel?: string | null
   displayId?: string | null
   width?: number | null
   height?: number | null
@@ -48,6 +52,9 @@ export interface Hotkey {
   durationSec: number
   /** Which session the action applies to; null means every one at once. */
   sessionId: string | null
+  /** A pinned hotkey keeps its own physical-screen reference across sessions. */
+  pinned?: boolean
+  target?: SourceRef | null
   isDefault?: boolean
   /** Wall-clock ms the key was pressed, stamped by the main process. */
   pressedAt?: number
@@ -176,7 +183,18 @@ export interface NativeSavePayload {
   mic: AudioLayer | null
 }
 
+export interface NativeStatus {
+  sessionId: string
+  status: 'recording' | 'recovering'
+  bufferedSeconds: number
+  bufferedBytes: number
+  generation: number
+  error: string | null
+  source: CaptureSource | null
+}
+
 export interface NativeStartOptions {
+  sourceRef?: SourceRef
   displayId: string
   width: number
   height: number

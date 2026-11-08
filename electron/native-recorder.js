@@ -28,6 +28,11 @@ const SEGMENT_SEC = 2
 const KEYFRAME_SEC = 0.5
 
 const RING_ROOT = path.join(process.env.CLIPPER_TEST_DATA || os.tmpdir(), 'clipper-ring')
+async function removeRingDir(dir) {
+  const absolute = path.resolve(dir)
+  if (!absolute.startsWith(path.resolve(RING_ROOT) + path.sep)) throw new Error('directorio de captura inválido')
+  await fs.rm(absolute, { recursive: true, force: true })
+}
 
 function runCapture(args, timeout = 15000) {
   return new Promise((resolve) => {
@@ -43,6 +48,8 @@ function runCapture(args, timeout = 15000) {
 // --- outputs -------------------------------------------------------------------
 
 let outputsCache = null
+let resolveDisplay = null
+function setDisplayResolver(fn) { resolveDisplay = fn }
 
 /** DXGI outputs ddagrab can open, in its own index order, with their sizes. */
 async function listOutputs() {
@@ -87,6 +94,12 @@ function thumbFingerprint(img) {
 }
 
 const mapCache = new Map()
+function selectFingerprint(scores) {
+  const sorted = [...scores].sort((a, b) => a.difference - b.difference)
+  if (!sorted.length || sorted[0].difference > 45) return null
+  if (sorted[1] && sorted[1].difference - sorted[0].difference < 2) return null
+  return sorted[0].idx
+}
 
 /**
  * Finds the ddagrab output that shows a given Electron display. Size decides it
@@ -106,19 +119,19 @@ async function outputForDisplay(displayId, width, height) {
     const src = sources.find((s) => String(s.display_id) === String(displayId))
     if (src && !src.thumbnail.isEmpty()) {
       const want = thumbFingerprint(src.thumbnail)
-      let best = Infinity
+      const scores = []
       for (const o of same) {
         const fp = await outputFingerprint(o.idx)
         if (!fp) continue
         let diff = 0
         for (let i = 0; i < want.length; i++) diff += Math.abs(want[i] - fp[i])
-        if (diff < best) {
-          best = diff
-          picked = o.idx
-        }
+        scores.push({ idx: o.idx, difference: diff / want.length })
       }
+      picked = selectFingerprint(scores)
     }
-    if (picked === null) picked = same[0].idx
+    // Ambiguous pictures (or no thumbnail) must use Chromium instead of
+    // silently taking the first output.
+    if (picked === null) return null
   }
   if (picked !== null) mapCache.set(key, picked)
   return picked
@@ -193,20 +206,84 @@ class Ring {
     this.lastOutTime = 0 // seconds of stream written
     this.stopping = false
     this.restarts = 0
+    this.restartTimer = null
+    this.startPromise = null
+    this.lastFrameAt = 0
+    this.lastError = null
+    this.source = null
+    this.watchdog = setInterval(() => {
+      if (!this.stopping && !this.startPromise && this.proc && Date.now() - this.lastFrameAt > 5000) this.recover('sin frames recientes')
+    }, 2000)
+    this.watchdog.unref?.()
   }
 
   get wrap() {
     return Math.ceil((this.opts.maxSeconds + 6) / SEGMENT_SEC) + 2
   }
 
-  async start() {
+  start() {
+    if (this.startPromise) return this.startPromise
+    this.startPromise = this.launch().finally(() => { this.startPromise = null })
+    return this.startPromise
+  }
+
+  scheduleRestart(delay) {
+    if (this.stopping || this.restartTimer) return
+    const wait = delay ?? Math.min(10000, 500 * ++this.restarts)
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null
+      if (this.stopping) return
+      void this.start().catch(err => {
+        this.lastError = err.message
+        log.write('nativo', `${this.sessionId}: recuperando (${err.message})`)
+        this.scheduleRestart()
+      })
+    }, wait)
+    this.restartTimer.unref?.()
+  }
+
+  recover(reason = 'cambio de pantalla') {
+    if (this.stopping || this.startPromise) return
+    invalidateOutputs()
+    this.lastError = reason
+    const proc = this.proc
+    this.proc = null
+    this.offset = null
+    this.lastOutTime = 0
+    this.lastFrameAt = 0
+    try { proc?.kill() } catch {}
+    if (this.restartTimer) clearTimeout(this.restartTimer)
+    this.restartTimer = null
+    this.scheduleRestart(0)
+  }
+
+  status() {
+    const healthy = Boolean(this.proc && this.offset !== null && this.lastOutTime > 0 && Date.now() - this.lastFrameAt <= 5000)
+    const bufferedSeconds = healthy ? Math.min(this.opts.maxSeconds, this.lastOutTime) : 0
+    return { sessionId: this.sessionId, status: healthy ? 'recording' : 'recovering', bufferedSeconds,
+      bufferedBytes: bufferedSeconds * this.opts.bitrateMbps * 1000000 / 8,
+      error: healthy ? null : this.lastError, generation: this.gen, source: this.source }
+  }
+
+  async launch() {
+    if (this.stopping) throw new Error('captura detenida')
     this.gen++
     this.offset = null
     this.lastOutTime = 0
+    this.lastFrameAt = 0
+    const previousDir = this.dir
     this.dir = path.join(RING_ROOT, `${this.sessionId}-${process.pid}-${this.gen}`)
-    await fs.rm(this.dir, { recursive: true, force: true })
+    await removeRingDir(this.dir)
     await fs.mkdir(this.dir, { recursive: true })
-
+    if (previousDir && previousDir !== this.dir) await removeRingDir(previousDir).catch(() => {})
+    if (resolveDisplay) {
+      this.source = await resolveDisplay(this.opts.sourceRef || { type: 'screen', displayId: this.opts.displayId, width: this.opts.width, height: this.opts.height })
+      if (!this.source) throw new Error('la pantalla configurada no está disponible')
+      const { displayId, width, height } = this.source
+      this.opts.outputIdx = await outputForDisplay(displayId, width, height)
+      if (this.opts.outputIdx === null) throw new Error('no se pudo identificar la salida de la pantalla')
+    }
+    if (this.stopping) throw new Error('captura detenida')
     const { outputIdx, fps, bitrateMbps, encoder } = this.opts
     const b = `${bitrateMbps}M`
     const g = String(Math.round(fps * KEYFRAME_SEC))
@@ -228,6 +305,7 @@ class Ring {
     let err = ''
     let buf = ''
     proc.stdout.on('data', (d) => {
+      if (this.proc !== proc || this.stopping) return
       buf += d
       let nl
       while ((nl = buf.indexOf('\n')) >= 0) {
@@ -236,8 +314,9 @@ class Ring {
         const m = /^out_time_us=(\d+)/.exec(line)
         if (!m) continue
         const t = Number(m[1]) / 1e6
-        if (t <= 0) continue
+        if (t <= 0 || t <= this.lastOutTime) continue
         this.lastOutTime = t
+        this.lastFrameAt = Date.now()
         // Smallest wall-minus-stream seen is the closest to the true offset: any
         // delay in reporting only ever makes the estimate later, never earlier.
         const est = Date.now() - t * 1000
@@ -247,20 +326,20 @@ class Ring {
     proc.stderr.on('data', (d) => {
       err = (err + d).slice(-2000)
     })
-    proc.on('exit', (code) => {
+    const onExit = code => {
       if (this.proc !== proc) return
       this.proc = null
+      this.offset = null
+      this.lastOutTime = 0
+      this.lastFrameAt = 0
       if (this.stopping) return
-      log.write('nativo', `${this.sessionId}: ffmpeg terminó (code=${code}) ${err.trim().split('\n').pop() || ''}`)
-      // Display changes (resolution, a UAC prompt, a game going exclusive) can
-      // drop the duplication; come back rather than leave the session dead.
-      if (this.restarts < 20) {
-        this.restarts++
-        setTimeout(() => {
-          if (!this.stopping) void this.start().catch((e) => log.write('nativo', `reinicio fallo: ${e.message}`))
-        }, Math.min(5000, 500 * this.restarts))
-      }
-    })
+      this.lastError = err.trim().split('\n').pop() || `ffmpeg terminó (${code})`
+      log.write('nativo', `${this.sessionId}: ${this.lastError}`)
+      invalidateOutputs()
+      this.scheduleRestart()
+    }
+    proc.on('exit', onExit)
+    proc.on('error', error => { err = error.message; onExit(-1) })
 
     // Wait for the first frames so arming reports failure instead of a dead buffer.
     const deadline = Date.now() + 8000
@@ -269,16 +348,22 @@ class Ring {
     }
     if (this.offset === null) {
       const why = err.trim().split('\n').pop() || 'sin frames'
-      this.stopping = true
+      // A failed attempt must not cancel the recording's lifetime. Later
+      // retries can succeed after Windows unlocks / the driver wakes up.
+      if (this.proc === proc) this.proc = null
       try { proc.kill() } catch {}
       throw new Error(`ffmpeg no arrancó: ${why}`)
     }
     this.restarts = 0
+    this.lastError = null
     log.write('nativo', `${this.sessionId}: grabando salida #${outputIdx} a ${fps} fps con ${encoder.name}`)
   }
 
   async stop() {
     this.stopping = true
+    clearInterval(this.watchdog)
+    if (this.restartTimer) clearTimeout(this.restartTimer)
+    this.restartTimer = null
     const proc = this.proc
     this.proc = null
     if (proc) {
@@ -288,7 +373,9 @@ class Ring {
         proc.once('exit', () => { clearTimeout(t); r() })
       })
     }
-    if (this.dir) await fs.rm(this.dir, { recursive: true, force: true }).catch(() => {})
+    // A launch still probing the display observes stopping before spawning.
+    await this.startPromise?.catch(() => {})
+    if (this.dir) await removeRingDir(this.dir).catch(() => {})
   }
 
   /** Segments on disk, oldest first, including the one still being written. */
@@ -316,13 +403,19 @@ class Ring {
    * Returns where the clip opens inside that file and on the wall clock.
    */
   async cut(endWall, durationSec, outTs) {
-    if (this.offset === null) throw new Error('el buffer todavía no tiene video')
+    if (this.status().status !== 'recording') {
+      this.recover('buffer no disponible')
+      throw new Error('CAPTURE_RECOVERING: la captura se está recuperando; el buffer vuelve a llenarse cuando llega video')
+    }
+    if (endWall < this.offset) throw new Error('CAPTURE_RECOVERING: la tecla se pulsó antes de que comenzara este buffer')
+    const generation = this.gen
     // Progress is reported every 250 ms; wait for the stream to reach the moment
     // the key was pressed, so that moment is in the clip rather than just before it.
     const deadline = Date.now() + 800
     while (this.offset + this.lastOutTime * 1000 < endWall && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 40))
     }
+    if (generation !== this.gen || this.status().status !== 'recording') throw new Error('CAPTURE_RECOVERING: se reinició la captura')
     const end = Math.min((endWall - this.offset) / 1000, this.lastOutTime)
     const want = Math.max(0, end - durationSec)
     const segs = (await this.segments()).filter((s) => s.end > want && s.start < end)
@@ -357,13 +450,13 @@ async function available() {
   return Boolean(await pickEncoder())
 }
 
-async function start(sessionId, { displayId, width, height, fps, bitrateMbps, maxSeconds }) {
+async function start(sessionId, { displayId, width, height, fps, bitrateMbps, maxSeconds, sourceRef }) {
   await stop(sessionId)
   const encoder = await pickEncoder()
   if (!encoder) throw new Error('sin encoder')
   const outputIdx = await outputForDisplay(displayId, width, height)
   if (outputIdx === null) throw new Error(`no encontré la salida DXGI de ${width}x${height}`)
-  const ring = new Ring(sessionId, { outputIdx, fps, bitrateMbps, maxSeconds, encoder })
+  const ring = new Ring(sessionId, { outputIdx, displayId, width, height, sourceRef, fps, bitrateMbps, maxSeconds, encoder })
   rings.set(sessionId, ring)
   try {
     await ring.start()
@@ -387,7 +480,7 @@ async function stopAll() {
 }
 
 function isRunning(sessionId) {
-  return rings.has(sessionId)
+  return rings.get(sessionId)?.status().status === 'recording'
 }
 
 async function cut(sessionId, endWall, durationSec, outTs) {
@@ -400,8 +493,13 @@ async function cut(sessionId, endWall, durationSec, outTs) {
 async function cleanStale() {
   const entries = await fs.readdir(RING_ROOT).catch(() => [])
   for (const e of entries) {
-    if (!e.includes(`-${process.pid}-`)) await fs.rm(path.join(RING_ROOT, e), { recursive: true, force: true }).catch(() => {})
+    if (!e.includes(`-${process.pid}-`)) await removeRingDir(path.join(RING_ROOT, e)).catch(() => {})
   }
 }
 
-module.exports = { available, start, stop, stopAll, isRunning, cut, cleanStale, invalidateOutputs, pickEncoder }
+function statuses() { return [...rings.values()].map(ring => ring.status()) }
+function recoverAll(reason) { invalidateOutputs(); for (const ring of rings.values()) ring.recover(reason) }
+function requestRecovery(ids) { for (const id of Array.isArray(ids) ? ids : [...rings.keys()]) rings.get(id)?.recover('recuperación solicitada') }
+function killForTest(sessionId) { rings.get(sessionId)?.proc?.kill() }
+
+module.exports = { Ring, selectFingerprint, requestRecovery, statuses, recoverAll, setDisplayResolver, killForTest, available, start, stop, stopAll, isRunning, cut, cleanStale, invalidateOutputs, pickEncoder }

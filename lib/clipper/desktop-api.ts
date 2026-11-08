@@ -7,6 +7,7 @@ import type {
   MedalProgress,
   MedalResult,
   MedalScan,
+  NativeStatus,
   SaveClipPayload,
   Settings,
   ShotMeta,
@@ -79,6 +80,9 @@ export function createDesktopAPI(bridge: DesktopBridge): ClipperAPI {
     setTrayState: (recording, label) => void bridge.invoke('tray:state', recording, label),
     getPreviewUrl: (clip) => bridge.invoke<string | null>('clips:preview', clip.id),
 
+    nativeStatus: () => bridge.invoke<NativeStatus[]>('native:status'),
+    recoverNative: (ids) => bridge.invoke('native:recover', ids),
+    onSourcesChanged: (cb) => bridge.on('sources:changed', cb),
     nativeAvailable: () => bridge.invoke<boolean>('native:available'),
     nativeStart: (sessionId, opts) => bridge.invoke('native:start', sessionId, opts),
     nativeStop: (sessionId) => bridge.invoke('native:stop', sessionId),

@@ -1,6 +1,8 @@
 const { app } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs/promises')
+const { setTimeout: delay } = require('node:timers/promises')
+const { samePhysicalSource, pinHotkeys } = require('./source-identity')
 
 const DEFAULT_SESSION_ID = 'main'
 
@@ -45,11 +47,33 @@ async function readJson(file, fallback) {
   }
 }
 
-async function writeJson(file, data) {
+const fileQueues = new Map()
+function serialFile(file, fn) {
+  const job = (fileQueues.get(file) || Promise.resolve()).then(fn, fn)
+  fileQueues.set(file, job.catch(() => {}))
+  return job
+}
+function writeJson(file, data) { return serialFile(file, () => writeJsonUnlocked(file, data)) }
+async function mutateJson(file, fn) {
+  return serialFile(file, async () => {
+    const next = fn(await readJson(file, []))
+    await writeJsonUnlocked(file, next)
+  })
+}
+async function writeJsonUnlocked(file, data) {
   await fs.mkdir(path.dirname(file), { recursive: true })
   const tmp = `${file}.tmp`
+  if (file === settingsPath()) await fs.copyFile(file, `${file}.bak`).catch(() => {})
   await fs.writeFile(tmp, JSON.stringify(data, null, 2))
-  await fs.rename(tmp, file)
+  // Windows readers / antivirus can briefly hold a file without delete sharing.
+  // Retry the atomic replacement, keeping the last good settings intact.
+  for (let attempt = 0; ; attempt++) {
+    try { await fs.rename(tmp, file); break }
+    catch (error) {
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code) || attempt >= 5) throw error
+      await delay(50 * (attempt + 1))
+    }
+  }
 }
 
 /**
@@ -109,12 +133,7 @@ function migrate(saved) {
   out.sessions = out.sessions.filter((sess) => {
     const src = sess.source
     if (!src) return true
-    const dup = seen.find(
-      (x) =>
-        (x.displayId && src.displayId && String(x.displayId) === String(src.displayId)) ||
-        x.id === src.id ||
-        (x.type === src.type && x.name && x.name === src.name),
-    )
+    const dup = seen.find(x => samePhysicalSource(x, src))
     if (dup) return false
     seen.push(src)
     return true
@@ -122,9 +141,14 @@ function migrate(saved) {
   if (!out.sessions.length) out.sessions = [...DEFAULT_SETTINGS.sessions]
 
   // Hotkeys left pointing at a session that just went away.
+  out.hotkeys = pinHotkeys(out)
+  for (const h of out.hotkeys) {
+    if (!h.pinned || !h.target || !h.sessionId || out.sessions.some(s => s.id === h.sessionId)) continue
+    out.sessions.push({ id: h.sessionId, name: h.target.displayLabel || `${h.target.width}×${h.target.height}`, source: h.target, autoArm: true })
+  }
   const alive = new Set(out.sessions.map((x) => x.id))
   out.hotkeys = out.hotkeys.map((h) =>
-    h.sessionId && !alive.has(h.sessionId) ? { ...h, sessionId: out.sessions[0].id } : h,
+    !h.pinned && h.sessionId && !alive.has(h.sessionId) ? { ...h, sessionId: out.sessions[0].id } : h,
   )
 
   delete out.lastSourceId
@@ -166,12 +190,13 @@ async function getSettings() {
       .catch(() => {})
   }
   await migrationsRan
-  const saved = await readJson(settingsPath(), {})
+  const saved = await readJson(settingsPath(), null) || await readJson(`${settingsPath()}.bak`, {})
   const merged = migrate(saved)
   return { ...merged, clipsDir: merged.clipsDir || defaultClipsDir() }
 }
 
 async function saveSettings(settings) {
+  settings = migrate(settings)
   await writeJson(settingsPath(), settings)
   await ensureDirs()
   return settings
@@ -199,16 +224,15 @@ async function getClip(id) {
 }
 
 async function upsertClip(meta) {
-  const clips = await listClips()
-  const idx = clips.findIndex((c) => c.id === meta.id || c.fileName === meta.fileName)
-  if (idx >= 0) clips[idx] = meta
-  else clips.push(meta)
-  await writeJson(await indexPath(), clips)
+  await mutateJson(await indexPath(), clips => {
+    const idx = clips.findIndex(c => c.id === meta.id || c.fileName === meta.fileName)
+    if (idx >= 0) clips[idx] = meta
+    else clips.push(meta)
+    return clips
+  })
 }
-
 async function removeClip(id) {
-  const clips = (await listClips()).filter((c) => c.id !== id)
-  await writeJson(await indexPath(), clips)
+  await mutateJson(await indexPath(), clips => clips.filter(c => c.id !== id))
 }
 
 // --- screenshots -------------------------------------------------------------
@@ -226,18 +250,15 @@ async function getShot(id) {
 }
 
 async function upsertShot(meta) {
-  const shots = await listShots()
-  // Match on the file too: an adopted row gets a fresh id each time, so only the
-  // file name can tell us it is the same screenshot.
-  const idx = shots.findIndex((s) => s.id === meta.id || s.fileName === meta.fileName)
-  if (idx >= 0) shots[idx] = meta
-  else shots.push(meta)
-  await writeJson(await shotsIndexPath(), shots)
+  await mutateJson(await shotsIndexPath(), shots => {
+    const idx = shots.findIndex(s => s.id === meta.id || s.fileName === meta.fileName)
+    if (idx >= 0) shots[idx] = meta
+    else shots.push(meta)
+    return shots
+  })
 }
-
 async function removeShot(id) {
-  const shots = (await listShots()).filter((s) => s.id !== id)
-  await writeJson(await shotsIndexPath(), shots)
+  await mutateJson(await shotsIndexPath(), shots => shots.filter(s => s.id !== id))
 }
 
 async function diskUsage() {

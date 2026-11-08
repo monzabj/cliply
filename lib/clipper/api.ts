@@ -9,6 +9,7 @@ import type {
   MedalScan,
   NativeSavePayload,
   NativeStartOptions,
+  NativeStatus,
   SaveClipPayload,
   Settings,
   ShotMeta,
@@ -109,6 +110,9 @@ export interface ClipperAPI {
   getPreviewUrl(clip: ClipMeta): Promise<string | null>
 
   // --- native screen recording (ffmpeg, outside Chromium) ---
+  nativeStatus(): Promise<NativeStatus[]>
+  recoverNative(sessionIds?: string[]): Promise<void>
+  onSourcesChanged(cb: () => void): () => void
   nativeAvailable(): Promise<boolean>
   nativeStart(
     sessionId: string,
