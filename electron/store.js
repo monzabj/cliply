@@ -146,6 +146,10 @@ function migrate(saved) {
   out.hotkeys = pinHotkeys(out)
   for (const h of out.hotkeys) {
     if (!h.pinned || !h.target || !h.sessionId || out.sessions.some(s => s.id === h.sessionId)) continue
+    // A removed duplicate session must not be recreated by its pin. Keep all
+    // shortcuts and durations, sharing the surviving physical screen's buffer.
+    const existing = out.sessions.find(s => samePhysicalSource(s.source, h.target))
+    if (existing) { h.sessionId = existing.id; continue }
     out.sessions.push({ id: h.sessionId, name: h.target.displayLabel || `${h.target.width}×${h.target.height}`, source: h.target, autoArm: true })
   }
   const alive = new Set(out.sessions.map((x) => x.id))

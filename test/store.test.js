@@ -76,3 +76,18 @@ test('automatic cleanup excludes continuous recordings and their size from the c
     assert.equal((await f.store.listClips()).length, 2)
   } finally { await f.cleanup() }
 })
+
+test('two pinned keys for one physical display share a surviving session without losing either key or duration', async () => {
+  const target = { id: 'screen:0', type: 'screen', name: 'HD', devicePath: 'physical-hd', width: 1920, height: 1080 }
+  const f = await fixture({ sessions: [{ id: 'one', source: target, autoArm: true }, { id: 'duplicate', source: target, autoArm: true }], hotkeys: [
+    { id: 'a', accelerator: 'F8', action: 'clip', durationSec: 30, sessionId: 'one', pinned: true, target },
+    { id: 'b', accelerator: 'F6', action: 'clip', durationSec: 60, sessionId: 'duplicate', pinned: true, target },
+  ] })
+  try {
+    const settings = await f.store.getSettings()
+    assert.equal(settings.sessions.length, 1)
+    assert.deepEqual(JSON.parse(JSON.stringify(settings.hotkeys.filter(h => h.action === 'clip').map(h => [h.accelerator, h.durationSec, h.sessionId]))), [['F8', 30, 'one'], ['F6', 60, 'one']])
+    await f.store.saveSettings(settings)
+    assert.equal((await f.store.getSettings()).sessions.length, 1)
+  } finally { await f.cleanup() }
+})
