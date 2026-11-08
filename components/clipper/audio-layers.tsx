@@ -56,7 +56,7 @@ export function AudioLayers({ clip, api, mix, setMix, videoRef, src, volume, mut
     const result: Source[] = []
     const micUrl = api.getMicUrl(clip)
     if (micUrl) result.push({ id: 'microphone', url: micUrl, mic: true })
-    for (const track of apps ?? []) { const url = api.getAppAudioUrl(track.file); if (url) result.push({ id: track.id, url }) }
+    for (const track of apps ?? []) { const url = api.getAppAudioUrl(track.file,clip); if (url) result.push({ id: track.id, url }) }
     return JSON.stringify(result)
   })()
   const sources = React.useMemo(() => JSON.parse(sourceSignature) as Source[], [sourceSignature])

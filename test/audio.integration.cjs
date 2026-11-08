@@ -38,6 +38,17 @@ async function main(){
   const pcmA=decode(path.join(clipsDir,a.file)),pcmB=decode(path.join(clipsDir,b.file))
   assert.ok(amplitude(pcmA,440)>.005&&amplitude(pcmA,880)<.0001,'A contains only 440 Hz')
   assert.ok(amplitude(pcmB,880)>.005&&amplitude(pcmB,440)<.0001,'B contains only 880 Hz')
+  const continuousDir=path.join(profile,'continuous-audio');await fs.mkdir(continuousDir)
+  const cs=await invoke('continuous:prepare',{name:'Layered session',directory:continuousDir,source:{type:'screen',name:'Generated source'},container:'webm'}),cw=Date.now()
+  await invoke('continuous:started',cs.id,cw,cw)
+  await page.evaluate(async({id,vb,mb})=>{await window.clipper.invoke('continuous:append',id,'video',new Uint8Array(vb).buffer);await window.clipper.invoke('continuous:append',id,'mic',new Uint8Array(mb).buffer)},{id:cs.id,vb:[...await fs.readFile(video)],mb:[...await fs.readFile(mic)]})
+  await pause(2200);await invoke('continuous:mark',cw+1000)
+  const long=await invoke('continuous:finish',cs.id,Date.now());assert.equal(long.audioWarning,null,JSON.stringify(long));assert.equal(long.audioApps.length,2);assert.equal(long.markers.length,1)
+  for(const t of long.audioApps){const pcm=decode(path.join(continuousDir,t.file));assert.ok(amplitude(pcm,t.exe==='ToneA.exe'?440:880)>.005)}
+  await invoke('clips:set-mix',long.id,{game:1,mic:1,gameMuted:false,micMuted:false,apps:Object.fromEntries(long.audioApps.map(t=>[t.id,{volume:1,muted:t.exe==='ToneA.exe'}]))})
+  const longCut=await invoke('clips:trim',{id:long.id,startSec:.1,endSec:1.9,mode:'new'}),longPcm=decode(path.join(clipsDir,longCut.fileName));assert.ok(amplitude(longPcm,440)<.0003);assert.ok(amplitude(longPcm,880)>.005);assert.ok(amplitude(longPcm,1320)>.03)
+  await invoke('clips:delete',longCut.id);await invoke('clips:delete',long.id)
+  console.log('PASS continuous live WASAPI -> streaming AAC archives -> external app sidecars -> independent rendered mix')
   if(process.env.CLIPPER_TEST_NATIVE==='1'){
     const source=(await invoke('sources:list')).find(s=>s.type==='screen')
     assert.equal(await invoke('native:available'),true)
@@ -96,4 +107,4 @@ async function main(){
   assert.deepEqual(errors,[])
   console.log('PASS microphone/computer order, expander, horizontal scroll, live independent gains, audible playback, persistence, rename, rendered mix and sidecar cleanup')
 }
-main().catch(e=>{console.error(e,logs.slice(-4000));process.exitCode=1}).finally(async()=>{try{if(page)await invoke('test:quit')}catch{}if(child){await pause(1200);child.kill()}children.forEach(c=>c.kill());if(browser)await browser.close().catch(()=>{});console.log('Isolated audio profile:',profile)})
+main().catch(async e=>{if(page)await page.screenshot({path:path.join(artifacts,'failure.png')}).catch(()=>{});console.error(e,logs.slice(-4000));process.exitCode=1}).finally(async()=>{try{if(page)await invoke('test:quit')}catch{}if(child){await pause(1200);child.kill()}children.forEach(c=>c.kill());if(browser)await browser.close().catch(()=>{});console.log('Isolated audio profile:',profile)})

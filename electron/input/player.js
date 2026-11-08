@@ -12,7 +12,7 @@ function mount() {
     .ci-button[aria-pressed=true]{color:#a2f3be;border-color:#70ba89}.ci-button:disabled{opacity:.5;cursor:default}
     .ci-panel{position:absolute;bottom:40px;left:0;width:320px;padding:18px;background:#1a1c23;color:#eef0f5;border:1px solid #424550;border-radius:12px;box-shadow:0 8px 32px #0009;line-height:1.5}
     .ci-panel p{font-size:12px;color:#acb2c3;margin:8px 0 14px}.ci-panel label{display:flex;gap:10px;align-items:center;font-size:13px;font-weight:600}.ci-panel input{accent-color:#95eeb0}.ci-status{font-size:11px;color:#9da8ba;margin-top:12px}
-    .ci-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 12px;background:#14161c;border-bottom:1px solid #30333c;font:12px system-ui;color:#b2b7c6}
+    .ci-controls{display:flex;flex-shrink:0;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 12px;background:#14161c;border-bottom:1px solid #30333c;font:12px system-ui;color:#b2b7c6}
     .ci-overlay{position:absolute;z-index:12;pointer-events:none;filter:drop-shadow(0 2px 4px #0007);touch-action:none}
     .ci-overlay[hidden],.ci-surface[hidden]{display:none}.ci-surface,.ci-surface>svg,.ci-canvas{width:100%;height:100%;display:block}
     .ci-overlay.ci-editing{pointer-events:auto;cursor:move;outline:2px dashed #9af1b8;outline-offset:0;border-radius:8px;background:#15253455}

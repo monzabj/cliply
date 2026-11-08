@@ -53,3 +53,26 @@ test('concurrent preference saves are atomic and pins survive a restart', async 
     assert.equal(recovered.hotkeys[0].target.width, 1920)
   } finally { await f.cleanup() }
 })
+
+test('continuous shortcuts default to unassigned and equal basenames in separate folders retain distinct index entries', async () => {
+  const f = await fixture()
+  try {
+    const defaults = await f.store.getSettings()
+    assert.equal(defaults.continuousToggleKey, '')
+    assert.equal(defaults.continuousMarkerKey, '')
+    const base = { fileName: 'session.mp4', createdAt: new Date().toISOString() }
+    await f.store.upsertClip({ ...base, id: 'local' })
+    await f.store.upsertClip({ ...base, id: 'external', storageDir: path.join(f.dir, 'elsewhere'), recording: true })
+    assert.equal((await f.store.listClips()).length, 2)
+  } finally { await f.cleanup() }
+})
+test('automatic cleanup excludes continuous recordings and their size from the clip budget', async () => {
+  const f = await fixture({ diskLimitGB: 1 })
+  try {
+    const base = { createdAt: new Date().toISOString() }
+    await f.store.upsertClip({ ...base, id: 'long', fileName: 'long.mp4', recording: true, sizeBytes: 10 * 1024 ** 3 })
+    await f.store.upsertClip({ ...base, id: 'clip', fileName: 'short.mp4', sizeBytes: 1024 ** 2 })
+    assert.equal(await f.store.enforceDiskLimit(), 0)
+    assert.equal((await f.store.listClips()).length, 2)
+  } finally { await f.cleanup() }
+})

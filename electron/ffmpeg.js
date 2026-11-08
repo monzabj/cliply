@@ -30,6 +30,7 @@ async function withTempDir(fn) {
 }
 
 const isMp4 = (p) => path.extname(p).toLowerCase() === '.mp4'
+async function finalizeContinuous(input,output){await runLow(['-y','-fflags','+genpts','-i',input,'-map','0:v:0','-map','0:a?','-c:v','copy',...(isMp4(output)?['-c:a','aac','-b:a','160k','-movflags','+faststart']:['-c:a','copy']),output])}
 
 /**
  * Stitches independently recorded segments and drops the leading `trimStartSec`.
@@ -215,6 +216,12 @@ async function toMp4(input, outPath) {
  */
 async function filmstrip(input, outPath, durationSec, frames = 14, height = 72) {
   await fs.mkdir(path.dirname(outPath), { recursive: true })
+  if(durationSec>300)return withTempDir(async folder=>{
+    // Seek to each sample instead of decoding hours of footage to draw one strip.
+    for(let i=0;i<frames;i++)await runLow(['-y','-ss',((i+.5)*durationSec/frames).toFixed(3),'-i',input,'-frames:v','1','-vf',`scale=-2:${height}`,'-q:v','4',path.join(folder,`frame-${String(i).padStart(3,'0')}.jpg`)])
+    await runLow(['-y','-framerate','1','-i',path.join(folder,'frame-%03d.jpg'),'-vf',`tile=${frames}x1`,'-frames:v','1','-q:v','4',outPath])
+    return outPath
+  })
   // Evenly spaced, not "representative": the strip is a ruler, so frame N has to
   // sit at position N in time or scrubbing against it lies.
   const fps = frames / Math.max(durationSec || frames, 1)
@@ -277,12 +284,14 @@ function runLow(args) {
  * The mic layer, if any, is mixed in at the clip's levels so the preview sounds
  * like the clip.
  */
-async function previewProxy(input, micInput, mix, outPath, apps = []) {
+async function previewProxy(input, micInput, mix, outPath, apps = [], maxDuration = null) {
   await fs.mkdir(path.dirname(outPath), { recursive: true })
   const tmp = outPath.replace(/\.mp4$/i, '.tmp.mp4')
   const [duration,computer]=await Promise.all([probeDuration(input),hasAudio(input)])
-  const plan=mixPlan(input,micInput,mix,apps,[],computer,duration||30)
+  const length=maxDuration?Math.min(duration||maxDuration,maxDuration):duration||30
+  const plan=mixPlan(input,micInput,mix,apps,[],computer,length)
   const args=['-y',...plan.inputs,'-filter_complex',plan.filters,'-map','0:v','-map','[aout]']
+  if(maxDuration)args.push('-t',String(length))
   args.push(
     '-vf', "scale=-2:'min(360,ih)'",
     // Captures are variable-rate; without this the MP4 muxer settles on 30 fps
@@ -368,6 +377,7 @@ async function thumbnail(input, outPath) {
 }
 
 module.exports = {
+  finalizeContinuous,
   encodePcm,
   concatAndTrim,
   concatRaw,

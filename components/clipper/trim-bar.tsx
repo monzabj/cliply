@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 import { formatTimecode } from '@/lib/clipper/hotkeys'
 
 interface TrimBarProps {
+  markers?: import('@/lib/clipper/types').RecordingMarker[]
   duration: number
   current: number
   range: [number, number]
@@ -17,7 +18,7 @@ interface TrimBarProps {
 type Handle = 'start' | 'end' | 'scrub'
 
 const MIN_LEN = 0.5
-const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300]
+const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200]
 
 /** Tick spacing that yields roughly six labels, on a round number of seconds. */
 function tickStep(duration: number) {
@@ -29,7 +30,7 @@ function tickStep(duration: number) {
  * Scrubbing timeline: a filmstrip of the clip with a ruler above it and draggable
  * in/out handles. What you keep stays lit; what you cut is dimmed.
  */
-export function TrimBar({ duration, current, range, onRangeChange, onSeek, filmstrip }: TrimBarProps) {
+export function TrimBar({ duration, current, range, onRangeChange, onSeek, filmstrip, markers = [] }: TrimBarProps) {
   const trackRef = React.useRef<HTMLDivElement>(null)
   const [dragging, setDragging] = React.useState<Handle | null>(null)
 
@@ -106,7 +107,7 @@ export function TrimBar({ duration, current, range, onRangeChange, onSeek, films
   return (
     <div className="flex flex-col gap-1 select-none">
       {/* ruler */}
-      <div className="relative h-4">
+      <div className="pointer-events-none relative h-4">
         {ticks.map((t) => (
           <span
             key={t}
@@ -160,6 +161,8 @@ export function TrimBar({ duration, current, range, onRangeChange, onSeek, films
           className="pointer-events-none absolute inset-y-0 rounded-[3px] border-y-[3px] border-white/90"
           style={{ left: `${pct(range[0])}%`, width: `${Math.max(0, pct(range[1]) - pct(range[0]))}%` }}
         />
+
+        {markers.map(marker => <button key={marker.id} type="button" aria-label={`${marker.label} · ${formatTimecode(marker.timeSec)}`} title={`${marker.label} · ${formatTimecode(marker.timeSec)}`} className="absolute -top-2 z-30 h-5 w-3 -translate-x-1/2 rounded-sm bg-amber-400 text-black text-[10px] shadow" style={{ left: `${pct(marker.timeSec)}%` }} onPointerDown={e => e.stopPropagation()} onClick={() => onSeek(marker.timeSec)}>⚑</button>)}
 
         {/* playhead, with a grab handle you can drag from anywhere on the bar */}
         <div

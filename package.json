@@ -1,6 +1,6 @@
 {
   "name": "clipper",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -14,7 +14,8 @@
     "test:inputs:integration": "node test/inputs.integration.cjs",
     "test:capture:integration": "node test/capture.integration.cjs",
     "build:audio": "node scripts/build-audio-worker.cjs",
-    "test:audio:integration": "node test/audio.integration.cjs"
+    "test:audio:integration": "node test/audio.integration.cjs",
+    "test:continuous:integration": "node test/continuous.integration.cjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

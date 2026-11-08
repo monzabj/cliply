@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS = {
   codec: 'auto',
   captureSystemAudio: true,
   captureAppAudio: true,
+  continuousName:'',continuousDir:null,continuousSource:null,continuousToggleKey:'',continuousMarkerKey:'',
   // On by default: without it a clip has one audio layer and the editor cannot
   // balance your voice against the game. The mic stays a separate file either way.
   captureMic: true,
@@ -226,7 +227,7 @@ async function getClip(id) {
 
 async function upsertClip(meta) {
   await mutateJson(await indexPath(), clips => {
-    const idx = clips.findIndex(c => c.id === meta.id || c.fileName === meta.fileName)
+    const idx = clips.findIndex(c => c.id === meta.id || (c.fileName === meta.fileName && (c.storageDir||'') === (meta.storageDir||'')))
     if (idx >= 0) clips[idx] = meta
     else clips.push(meta)
     return clips
@@ -280,7 +281,7 @@ async function enforceDiskLimit() {
   if (!limitBytes) return 0
 
   const clipsDir = settings.clipsDir
-  const clips = await listClips() // newest first
+  const clips = (await listClips()).filter(c=>!c.recording) // Continuous recordings are never auto-pruned.
   let total = clips.reduce((acc, c) => acc + (c.sizeBytes || 0)+(c.audioBytes||0), 0)
   if (total <= limitBytes) return 0
 

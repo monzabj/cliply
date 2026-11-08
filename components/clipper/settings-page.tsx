@@ -352,7 +352,7 @@ export function SettingsPage() {
                 hotkey={hk}
                 sessions={settings.sessions}
                 showSessions={settings.sessions.length > 1}
-                taken={settings.hotkeys.filter((h) => h.id !== hk.id).map((h) => h.accelerator)}
+                taken={[...settings.hotkeys.filter((h) => h.id !== hk.id).map((h) => h.accelerator), settings.continuousToggleKey, settings.continuousMarkerKey]}
                 canDelete={settings.hotkeys.length > 1}
                 t={t}
                 onChange={(patch) => updateHotkey(hk.id, patch)}
@@ -673,7 +673,14 @@ function HotkeyRow({
   onRemove: () => void
   onMakeDefault: () => void
 }) {
+  const { api } = useClipper()
   const [listening, setListening] = React.useState(false)
+  React.useEffect(() => {
+    if (!listening || !api) return
+    void api.captureHotkeys(true)
+    const timer = setTimeout(() => setListening(false), 15000)
+    return () => { clearTimeout(timer); void api.captureHotkeys(false) }
+  }, [listening, api])
   const isClip = hotkey.action === 'clip'
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {

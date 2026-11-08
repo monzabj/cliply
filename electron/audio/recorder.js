@@ -5,6 +5,8 @@ const {Decoder,AudioTimeline,windowPcm}=require('./timeline')
 const log=require('../log')
 let app,store,ffmpeg,settings={},armed=false,worker=null,readyAt=null,lastError=null,retry=null
 let timeline=new AudioTimeline()
+const subscribers=new Set()
+const subscribe=listener=>{subscribers.add(listener);return()=>subscribers.delete(listener)}
 const supported=()=>process.platform==='win32'&&Number(os.release().split('.')[2])>=20348
 const wanted=()=>supported()&&armed&&settings.captureSystemAudio&&settings.captureAppAudio
 function status(){return {enabled:!!settings.captureAppAudio,recording:!!worker&&readyAt!==null,supported:supported(),error:lastError,bufferedBytes:timeline.bytes,applications:timeline.tracks.size}}
@@ -18,18 +20,19 @@ function reconcile(){
   const child=spawn(file,args,{windowsHide:true,stdio:['ignore','pipe','pipe']});worker=child;readyAt=null;lastError=null
   const decoder=new Decoder((info,pcm)=>{
     if(worker!==child)return
+    for(const listener of subscribers){try{listener(info,pcm)}catch(e){log.write('audio-apps',e.message)}}
     if(info.type==='ready')readyAt=Date.now()
     if(info.type==='pcm')timeline.push(info,pcm)
     if(info.type==='coverage-gap')timeline.problem(info.end,`${info.name}: la pista se inició durante el clip.`,info.start)
     if(['error','fatal','discovery-error'].includes(info.type)){lastError=`${info.name||'Audio'}: ${info.error}`;timeline.problem(Date.now(),lastError);log.write('audio-apps',lastError)}
   })
-  const failed=message=>{if(worker!==child)return;lastError=message;timeline.problem(Date.now(),message);stop();if(wanted())retry=setTimeout(()=>{retry=null;reconcile()},10000)}
+  const failed=message=>{if(worker!==child)return;lastError=message;timeline.problem(Date.now(),message);for(const listener of subscribers)listener({type:'error',error:message},Buffer.alloc(0));stop();if(wanted())retry=setTimeout(()=>{retry=null;reconcile()},10000)}
   child.stdout.on('data',data=>{try{decoder.push(data)}catch(e){failed(e.message)}})
   child.stderr.on('data',data=>log.write('audio-apps',String(data).slice(-1000)))
   child.on('error',e=>failed(e.message));child.on('exit',code=>failed(`Se detuvo la captura por aplicación (${code}).`))
   try{os.setPriority(child.pid,os.constants.priority.PRIORITY_BELOW_NORMAL)}catch{}
 }
-function configure(value){settings=value;timeline.retainMs=(Math.min(300,Math.max(30,...(settings.hotkeys||[]).map(h=>Number(h.durationSec)||0)))+10)*1000;reconcile()}
+function configure(value){if(settings.captureAppAudio&&(!value.captureAppAudio||!value.captureSystemAudio))for(const listener of subscribers){try{listener({type:'error',error:'Se desactivó la captura de audio por aplicación durante la grabación.'},Buffer.alloc(0))}catch{}}settings=value;timeline.retainMs=(Math.min(300,Math.max(30,...(settings.hotkeys||[]).map(h=>Number(h.durationSec)||0)))+10)*1000;reconcile()}
 function setArmed(value){armed=!!value;reconcile()}
 function snapshot(start,end){
   if(!settings.captureSystemAudio||!settings.captureAppAudio)return null
@@ -61,4 +64,4 @@ async function save(clipsDir,fileName,snapshot){
   }catch(e){await Promise.all(files.map(file=>fs.rm(file,{force:true}).catch(()=>{})));log.write('audio-apps',`No se pudo guardar la separación: ${e.message}`);return {audioApps:[],audioWarning:'Se conservó Computadora completa: no se pudieron guardar las pistas por aplicación.'}}
 }
 async function install(context){app=context.app;store=context.store;ffmpeg=context.ffmpeg;configure(await store.getSettings());context.ipcMain.handle('audio-apps:status',()=>status())}
-module.exports={install,configure,setArmed,stop,status,snapshot,save,killForTest:()=>{if(process.env.CLIPPER_TEST_DATA)worker?.kill()}}
+module.exports={install,configure,setArmed,stop,status,snapshot,save,subscribe,killForTest:()=>{if(process.env.CLIPPER_TEST_DATA)worker?.kill()}}

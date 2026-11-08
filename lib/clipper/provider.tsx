@@ -5,6 +5,7 @@ import useSWR from 'swr'
 import { toast } from 'sonner'
 import { getClipper, type ClipperAPI } from './api'
 import { AudioRing, RollingRecorder } from './recorder'
+import { useContinuous, type ContinuousControl } from './use-continuous'
 import {
   DEFAULT_SESSION_ID,
   DEFAULT_SETTINGS,
@@ -51,6 +52,7 @@ interface SessionRuntime {
 }
 
 interface ClipperContextValue {
+  continuous: ContinuousControl
   api: ClipperAPI | null
   ready: boolean
   isDesktop: boolean
@@ -233,7 +235,13 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
       next.hotkeys = pinHotkeys(next)
       setSettings(next)
       settingsRef.current = next
-      if (api) await api.saveSettings(next)
+      if (api) {
+        await api.saveSettings(next)
+        if ('hotkeys' in patch || 'continuousToggleKey' in patch || 'continuousMarkerKey' in patch) {
+          const { failed } = await api.registerHotkeys(next.hotkeys)
+          setHotkeyFailures(failed)
+        }
+      }
     },
     [api],
   )
@@ -266,7 +274,7 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
       setHotkeyFailures(failed)
       if (failed.length) toast.error(t('toast.hotkeyFailed', { keys: failed.join(', ') }))
     })
-  }, [api, settings.hotkeys, t])
+  }, [api, settings.hotkeys, settings.continuousToggleKey, settings.continuousMarkerKey, t])
 
   /** Longest hotkey aimed at this session decides how much its buffer holds. */
   const maxSecondsFor = React.useCallback((sessionId: string) => {
@@ -332,6 +340,8 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
     armQueue.current = next.catch(() => undefined)
     return next
   }, [])
+
+  const continuous = useContinuous(api, settings, updateSettings, serialize, mutate)
 
   const longestClip = () => Math.max(...settingsRef.current.hotkeys.map((h) => h.durationSec), 10)
 
@@ -970,6 +980,7 @@ export function ClipperProvider({ children }: { children: React.ReactNode }) {
   }, [api, armedSessions.length, trayLabel])
 
   const value: ClipperContextValue = {
+    continuous,
     api,
     ready,
     isDesktop: api?.isDesktop ?? false,

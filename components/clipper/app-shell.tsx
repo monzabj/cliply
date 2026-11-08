@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { useClipper, type Page } from '@/lib/clipper/provider'
 import { useT, type DictKey } from '@/lib/i18n'
 import { TopBar } from './top-bar'
+import { ContinuousControls } from './continuous-controls'
 import { GalleryPage } from './gallery-page'
 import { CapturePage } from './capture-page'
 import { SettingsPage } from './settings-page'
@@ -87,6 +88,7 @@ export function AppShell() {
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <TopBar />
+        <ContinuousControls />
         <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {page === 'gallery' && <GalleryPage />}
           {page === 'capture' && <CapturePage />}

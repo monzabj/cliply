@@ -14,12 +14,26 @@ import type {
   SourceRef,
   TrimPayload,
   UpdateState,
+  ContinuousOptions,ContinuousState,
 } from './types'
 
 export function createDesktopAPI(bridge: DesktopBridge): ClipperAPI {
   return {
     isDesktop: true,
     platform: bridge.platform,
+    continuousStatus:()=>bridge.invoke<ContinuousState>('continuous:status'),
+    continuousPrepare:(o:ContinuousOptions)=>bridge.invoke<ContinuousState>('continuous:prepare',o),
+    continuousStarted:(id,wall,mic)=>bridge.invoke<ContinuousState>('continuous:started',id,wall,mic),
+    continuousAppend:(id,kind,data)=>bridge.invoke<void>('continuous:append',id,kind,data),
+    continuousFinish:(id,end)=>bridge.invoke<ClipMeta>('continuous:finish',id,end),
+    continuousCancel:id=>bridge.invoke<void>('continuous:cancel',id),
+    continuousMark:at=>bridge.invoke('continuous:mark',at),
+    chooseRecordingDir:()=>bridge.invoke<string|null>('continuous:choose-dir'),
+    captureHotkeys:listening=>bridge.invoke<void>('hotkeys:capture',listening),
+    onContinuousState:cb=>bridge.on('continuous:state',s=>cb(s as ContinuousState)),
+    onContinuousToggle:cb=>bridge.on('continuous:toggle',cb),
+    onContinuousStop:cb=>bridge.on('continuous:stop-request',cb),
+    onContinuousSaved:cb=>bridge.on('continuous:saved',c=>cb(c as ClipMeta)),
 
     getSettings: () => bridge.invoke<Settings>('settings:get'),
     saveSettings: (settings) => bridge.invoke<Settings>('settings:save', settings),
@@ -36,9 +50,9 @@ export function createDesktopAPI(bridge: DesktopBridge): ClipperAPI {
     renameClipFile: (id, baseName) => bridge.invoke<ClipMeta>('clips:rename-file', id, baseName),
     trimClip: (payload: TrimPayload) => bridge.invoke<ClipMeta>('clips:trim', payload),
     setMix: (id, mix) => bridge.invoke<ClipMeta | null>('clips:set-mix', id, mix),
-    getMicUrl: (clip) => (clip.micFile ? `clip://local/${encodeURIComponent(clip.micFile)}` : null),
-    getAppAudioUrl: (file) => `clip://local/${encodeURIComponent(file)}`,
-    getClipUrl: async (clip) => `clip://local/${encodeURIComponent(clip.fileName)}?v=${clip.sizeBytes}`,
+    getMicUrl: (clip) => (clip.micFile ? clip.storageDir?`clip://media/${encodeURIComponent(clip.id)}/mic`:`clip://local/${encodeURIComponent(clip.micFile)}` : null),
+    getAppAudioUrl: (file,clip) => clip?.storageDir?`clip://media/${encodeURIComponent(clip.id)}/app/${encodeURIComponent(file)}`:`clip://local/${encodeURIComponent(file)}`,
+    getClipUrl: async (clip) => clip.storageDir?`clip://media/${encodeURIComponent(clip.id)}/video?v=${clip.sizeBytes}`:`clip://local/${encodeURIComponent(clip.fileName)}?v=${clip.sizeBytes}`,
     releaseClipUrl: () => {},
     getThumbnailUrl: (clip) =>
       clip.thumbnail ? `clip://thumbs/${encodeURIComponent(clip.thumbnail)}?v=${clip.sizeBytes}` : null,

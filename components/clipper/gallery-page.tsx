@@ -572,7 +572,7 @@ function ClipCard({ clip, onOpen }: { clip: ClipMeta; onOpen: () => void }) {
         )}
 
         <span className="absolute bottom-2 right-2 rounded bg-background/85 px-1.5 py-0.5 font-mono text-[11px] backdrop-blur">
-          {formatDuration(clip.durationSec)}
+          {clip.recording ? "Grabación · " : ""}{formatDuration(clip.durationSec)}
         </span>
 
         {clip.format === 'mp4' && !playing && (

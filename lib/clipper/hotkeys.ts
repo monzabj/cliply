@@ -68,7 +68,7 @@ export function formatClock(sec: number) {
   const total = Math.max(0, Math.floor(sec))
   const m = Math.floor(total / 60)
   const s = total % 60
-  return `${m}:${s.toString().padStart(2, '0')}`
+  return m >= 60 ? `${Math.floor(m / 60)}:${(m % 60).toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}` : `${m}:${s.toString().padStart(2, '0')}`
 }
 
 /** Keeps tenths: used where the exact cut point matters. */

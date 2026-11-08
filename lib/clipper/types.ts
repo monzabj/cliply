@@ -74,6 +74,11 @@ export interface Settings {
   captureSystemAudio: boolean
   /** Keep independently editable application soundtracks (Windows). */
   captureAppAudio: boolean
+  continuousName: string
+  continuousDir: string | null
+  continuousSource: SourceRef | null
+  continuousToggleKey: string
+  continuousMarkerKey: string
   captureMic: boolean
   /** Empty means the system default input. */
   micDeviceId: string | null
@@ -124,6 +129,9 @@ export interface AudioMix {
 }
 
 export interface AppAudioTrack { id: string; name: string; exe: string; file: string }
+export interface RecordingMarker { id: string; timeSec: number; label: string }
+export interface ContinuousOptions { name: string; directory: string; source: ClipSource; container: 'mkv' | 'webm' }
+export interface ContinuousState { id?: string; status: 'idle'|'preparing'|'recording'|'stopping'|'error';name?: string;directory?: string;startWall?: number|null;elapsedSec?: number;markers: RecordingMarker[];error?: string|null;bytes?: number;saved?: ClipMeta }
 
 export const DEFAULT_MIX: AudioMix = { game: 1, mic: 1, gameMuted: false, micMuted: false }
 
@@ -145,6 +153,10 @@ export interface ClipMeta {
   micFile?: string | null
   audioApps?: AppAudioTrack[]
   audioWarning?: string | null
+  storageDir?: string | null
+  recording?: boolean
+  markers?: RecordingMarker[]
+  markerFile?: string | null
   /** Optional input-state sidecar; the video does not contain an overlay. */
   inputsFile?: string | null
   mix?: AudioMix
@@ -330,6 +342,7 @@ export const DEFAULT_SETTINGS: Settings = {
   codec: 'auto',
   captureSystemAudio: true,
   captureAppAudio: true,
+  continuousName: '',continuousDir:null,continuousSource:null,continuousToggleKey:'',continuousMarkerKey:'',
   // On: without it a clip has a single audio layer and the editor cannot balance
   // your voice against the game. The mic is always kept as a separate file.
   captureMic: true,

@@ -121,6 +121,12 @@ export function createWebAPI(): ClipperAPI {
   return {
     isDesktop: false,
     platform: 'web',
+    continuousStatus:async()=>({status:'idle',markers:[]}),
+    continuousPrepare:async()=>{throw Error('Continuous recording requires the desktop app')},
+    continuousStarted:async()=>{throw Error('Desktop only')},continuousAppend:async()=>{},
+    continuousFinish:async()=>{throw Error('Desktop only')},continuousCancel:async()=>{},continuousMark:async()=>null,
+    chooseRecordingDir:async()=>null,captureHotkeys:async()=>{},
+    onContinuousState:()=>()=>{},onContinuousToggle:()=>()=>{},onContinuousStop:()=>()=>{},onContinuousSaved:()=>()=>{},
 
     async getSettings() {
       try {

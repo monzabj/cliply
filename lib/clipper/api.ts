@@ -16,6 +16,7 @@ import type {
   SourceRef,
   TrimPayload,
   UpdateState,
+  ContinuousOptions,ContinuousState,
 } from './types'
 
 export interface ShotResult {
@@ -32,6 +33,19 @@ export interface ShotResult {
 export interface ClipperAPI {
   readonly isDesktop: boolean
   readonly platform: string
+  continuousStatus(): Promise<ContinuousState>
+  continuousPrepare(options: ContinuousOptions): Promise<ContinuousState>
+  continuousStarted(id: string, wall: number, micWall?: number): Promise<ContinuousState>
+  continuousAppend(id: string, kind: 'video'|'mic', data: ArrayBuffer): Promise<void>
+  continuousFinish(id: string, end?: number): Promise<ClipMeta>
+  continuousCancel(id: string): Promise<void>
+  continuousMark(at?: number): Promise<import('./types').RecordingMarker|null>
+  chooseRecordingDir(): Promise<string|null>
+  captureHotkeys(listening: boolean): Promise<void>
+  onContinuousState(callback:(state:ContinuousState)=>void):()=>void
+  onContinuousToggle(callback:()=>void):()=>void
+  onContinuousStop(callback:()=>void):()=>void
+  onContinuousSaved(callback:(clip:ClipMeta)=>void):()=>void
 
   getSettings(): Promise<Settings>
   saveSettings(settings: Settings): Promise<Settings>
@@ -56,7 +70,7 @@ export interface ClipperAPI {
   setMix(id: string, mix: AudioMix): Promise<ClipMeta | null>
   /** Playable URL for the separate microphone layer, when the clip has one. */
   getMicUrl(clip: ClipMeta): string | null
-  getAppAudioUrl(file: string): string | null
+  getAppAudioUrl(file: string, clip?: ClipMeta): string | null
   getClipUrl(clip: ClipMeta): Promise<string>
   releaseClipUrl(url: string): void
   getThumbnailUrl(clip: ClipMeta): string | null
