@@ -1,0 +1,64 @@
+name: Release Clipper for Windows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+concurrency: clipper-windows-release
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm electron:build:win --publish never
+      - name: Verify Windows artifacts and publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid release version: $version" }
+          $tag = "v$version"
+          $setup = "Clipper-Setup-$version.exe"
+          $assets = @("dist/$setup", "dist/$setup.blockmap", 'dist/latest.yml')
+          foreach ($asset in $assets) {
+            if ((Get-Item -LiteralPath $asset).Length -eq 0) { throw "Empty release asset: $asset" }
+          }
+          $metadata = Get-Content dist/latest.yml -Raw
+          $sha = Get-FileHash "dist/$setup" -Algorithm SHA512
+          $digest = [Convert]::ToBase64String([Convert]::FromHexString($sha.Hash))
+          if (!$metadata.Contains("path: $setup") -or !$metadata.Contains("sha512: $digest")) {
+            throw 'latest.yml does not match the installer'
+          }
+          $latest = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name
+          if ($LASTEXITCODE) { throw 'Could not check the latest published version' }
+          if ($latest -eq $tag) {
+            Write-Host "$tag is already published. Verified the Windows build."
+            exit 0
+          }
+          if ([version]$version -le [version]($latest.Substring(1))) {
+            throw "$tag must be newer than $latest"
+          }
+          gh release create $tag @assets --target $env:GITHUB_SHA --title "Clipper $version" --latest --generate-notes --notes-start-tag $latest
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $published = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name
+          if ($LASTEXITCODE -or $published -ne $tag) { throw "Latest release is not $tag" }
