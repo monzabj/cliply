@@ -1772,6 +1772,7 @@ if (!gotLock) {
     setupDisplayMediaHandler()
     registerIpc()
     await inputs.install({ app, store, ipcMain })
+    require('./input/overlay-export').installInputExport({ ipcMain, dialog, store, window: () => win })
     await appAudio.install({app,store,ipcMain,ffmpeg})
     await continuous.install({app,store,ipcMain,ffmpeg,appAudio,dialog,send,log,onActive:()=>{updateCaptureHelpers();setTrayState(clipBuffersArmed||continuous.active(),continuous.state().name)}})
     await store.ensureDirs()

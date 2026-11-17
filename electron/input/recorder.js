@@ -79,6 +79,11 @@ async function trim(clipsDir, clip, fileName, startSec, endSec) {
   if (!track || track.version !== 1 || !Array.isArray(track.frames)) return null
   return save(clipsDir, fileName, sliceTrack(track, startSec * 1000, endSec * 1000))
 }
+async function readTrack(clip, clipsDir) {
+  const name = clip.inputsFile || sidecarName(clip.fileName)
+  const track = await read(path.join(clipsDir, path.basename(name)))
+  return track?.version === 1 && Array.isArray(track.frames) ? track : null
+}
 async function install(context) {
   app = context.app; store = context.store
   enabled = (await read(settingsFile()))?.enabled === true
@@ -93,12 +98,9 @@ async function install(context) {
   })
   context.ipcMain.handle('inputs:read', async (_event, fileName) => {
     // Resolve only indexed clips, never arbitrary renderer-provided paths.
-    const clip = (await store.listClips()).find(c => c.fileName === fileName)
-    if (!clip) return null
-    const name = clip.inputsFile || sidecarName(clip.fileName)
-    const track = await read(path.join(await store.getClipsDir(), path.basename(name)))
-    return track?.version === 1 && Array.isArray(track.frames) ? track : null
+    const clip = (await store.listClips()).find(c => !c.storageDir && c.fileName === fileName)
+    return clip ? readTrack(clip, await store.getClipsDir()) : null
   })
   await configure()
 }
-module.exports = { install, setArmed, configure, snapshot, save, trim, stop, status, sidecarName }
+module.exports = { install, setArmed, configure, snapshot, save, trim, stop, status, sidecarName, readTrack }

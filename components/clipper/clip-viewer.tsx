@@ -446,6 +446,7 @@ export function ClipViewer() {
                 <div className="clip-stage-video relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">
                   <video
                     ref={videoRef}
+                    data-input-export-mix={JSON.stringify(mix)}
                     src={src ?? undefined}
                     className="mx-auto h-full min-h-0 max-h-[44vh] w-full bg-black object-contain"
                     onLoadedMetadata={onLoaded}

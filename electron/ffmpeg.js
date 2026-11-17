@@ -157,20 +157,29 @@ async function encodePcm(pcm,outPath){
  * a trim needs a real re-encode to land the cut on an exact frame.
  */
 async function renderMix(input, micInput, mix, outPath, opts = {}) {
-  const { startSec, endSec, video = 'copy', apps = [] } = opts
+  const { startSec, endSec, video = 'copy', apps = [], overlay } = opts
   const [length,computer]=await Promise.all([probeDuration(input),hasAudio(input)])
   const duration=Math.max(.001,Math.min(endSec??length??30,length??endSec??30)-(startSec||0))
   const cut=[]
   if(startSec!==undefined)cut.push('-ss',Number(startSec).toFixed(3))
   cut.push('-t',duration.toFixed(3))
   const plan=mixPlan(input,micInput,mix,apps,cut,computer,duration)
-  const args=['-y',...plan.inputs,'-filter_complex',plan.filters,'-map','0:v','-map','[aout]']
+  const args=['-y',...plan.inputs]
+  if (overlay) {
+    const index = plan.inputs.filter(arg => arg === '-i').length
+    const base = `[0:v]scale=${overlay.width}:${overlay.height},setsar=1,setpts=PTS-STARTPTS[base]`
+    const picture = `[base][${index}:v]overlay=x=${overlay.x}:y=${overlay.y}:eof_action=repeat:format=auto[vout]`
+    args.push('-f','concat','-safe','0','-i',overlay.list,'-filter_complex_threads','2',
+      '-filter_complex',`${plan.filters};${base};${picture}`,'-map','[vout]','-fps_mode','passthrough')
+  } else args.push('-filter_complex',plan.filters,'-map','0:v')
+  args.push('-map','[aout]')
   if(video==='copy')args.push('-c:v','copy')
   else if(isMp4(outPath))args.push('-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p')
   else args.push('-c:v','libvpx-vp9','-deadline','realtime','-cpu-used','8','-crf','30','-b:v','0')
   args.push('-t',duration.toFixed(3),'-c:a',isMp4(outPath)?'aac':'libopus','-b:a','192k')
   if(isMp4(outPath))args.push('-movflags','+faststart')
-  args.push(outPath);await run(args)
+  if (overlay) args.push('-threads','4')
+  args.push(outPath);await (overlay ? runLow(args) : run(args))
 }
 
 /** Frame-accurate trim; re-encodes so the cut is exact. */

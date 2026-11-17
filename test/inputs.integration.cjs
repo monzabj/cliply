@@ -27,7 +27,7 @@ async function main() {
   await fs.writeFile(path.join(profile, 'migrations.json'), '["mic-on-1.3"]')
   const executable = process.env.CLIPPER_ELECTRON_PATH || require('electron')
   child = spawn(executable, [root, '--remote-debugging-port=0', '--hidden'], {
-    env: { ...process.env, CLIPPER_TEST_DATA: profile }, windowsHide: true,
+    env: { ...process.env, CLIPPER_TEST_DATA: profile, CLIPPER_TEST_INPUT_EXPORT: '1' }, windowsHide: true,
     stdio: ['ignore', 'ignore', 'pipe'],
   })
   child.on('error', error => { logs += error.stack })
@@ -203,6 +203,51 @@ async function main() {
   await page.evaluate(()=>document.exitFullscreen())
   assert.equal(before, await digest())
   console.log('PASS hidden overlay, toggle, keyboard/controller maps, seek and unchanged video')
+  await page.getByLabel('Tipo de mapa').selectOption('kbm')
+  await page.getByLabel('Posición del mapa').selectOption('free')
+  await page.getByLabel('Diseño de teclado').selectOption('compact')
+  await video.evaluate(v=>{v.pause();v.currentTime=.65})
+  const expectedBounds = await video.evaluate(v=>{
+    const video=v.getBoundingClientRect(),map=document.querySelector('.ci-overlay').getBoundingClientRect()
+    const width=Math.min(video.width,video.height*v.videoWidth/v.videoHeight),height=width*v.videoHeight/v.videoWidth
+    const x=(map.left-video.left-(video.width-width)/2)*640/width
+    const y=(map.top-video.top-(video.height-height)/2)*360/height
+    return {x,y,right:x+map.width*640/width,bottom:y+map.height*360/height}
+  })
+  await page.getByRole('button',{name:'Guardar input',exact:true}).click()
+  await page.waitForSelector('.ci-save:not([disabled])',{timeout:70000})
+  await page.getByText('Copia con inputs guardada',{exact:true}).waitFor({timeout:70000})
+  const baked = path.join(profile,'inputs-export.mp4')
+  const extract = (file,t) => execFileSync(require('ffmpeg-static'), [
+    '-hide_banner','-loglevel','error','-ss',String(t),'-i',file,'-vf','scale=640:360',
+    '-frames:v','1','-pix_fmt','rgb24','-f','rawvideo','pipe:1',
+  ],{windowsHide:true,maxBuffer:2*1024*1024})
+  const highlightBounds = pixels => {
+    let count=0,minX=640,minY=360,maxX=0,maxY=0
+    for(let i=0;i<pixels.length;i+=3)if(pixels[i]>138&&pixels[i+1]<134&&pixels[i+2]>160&&pixels[i+2]>pixels[i+1]*1.5){
+      const pixel=i/3,x=pixel%640,y=Math.floor(pixel/640)
+      minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);count++
+    }
+    return {count,minX,minY,maxX,maxY}
+  }
+  const freeHighlight=highlightBounds(extract(baked,.65))
+  assert.ok(freeHighlight.count>60&&freeHighlight.minX>=expectedBounds.x-2&&freeHighlight.minY>=expectedBounds.y-2&&
+    freeHighlight.maxX<=expectedBounds.right+2&&freeHighlight.maxY<=expectedBounds.bottom+2,
+    JSON.stringify({freeHighlight,expectedBounds}))
+  await page.getByLabel('Tipo de mapa').selectOption('auto')
+  await page.getByLabel('Diseño de teclado').selectOption('full')
+  await page.getByLabel('Posición del mapa').selectOption('right')
+  await page.getByLabel('Tamaño del mapa').fill('45')
+  await page.getByRole('button',{name:'Guardar input',exact:true}).click()
+  await page.waitForSelector('.ci-save:not([disabled])',{timeout:70000})
+  await page.getByText('Copia con inputs guardada',{exact:true}).waitFor({timeout:70000})
+  const keyHighlight=highlightBounds(extract(baked,.65))
+  const padHighlight=highlightBounds(extract(baked,1.75))
+  assert.ok(keyHighlight.count>60&&keyHighlight.minX>335&&keyHighlight.minY>230,JSON.stringify(keyHighlight))
+  assert.ok(padHighlight.count>60&&padHighlight.minX>335&&padHighlight.minY>150,JSON.stringify(padHighlight))
+  assert.ok(highlightBounds(extract(baked,.2)).count<20,'Highlight is absent before the press')
+  assert.equal(before,await digest(),'Input export leaves the original video unchanged')
+  console.log('PASS MP4 export burns in keyboard and PS5 highlights at the chosen preset or free position and time')
   const renamed = await invoke('clips:rename-file', saved.id, 'input-test-renamed')
   assert.equal(renamed.inputsFile, 'input-test-renamed.inputs.json')
   const trimmed = await invoke('clips:trim', { id: renamed.id, startSec: .5, endSec: 2.5, mode: 'new' })

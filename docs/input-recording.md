@@ -45,6 +45,10 @@ video without baking in an overlay. To move an editable input track elsewhere,
 keep the video and its `.inputs.json` together. Older clips have no input data;
 it cannot be reconstructed after recording.
 
+Click **Guardar input** to export an MP4 with the animated map and current audio
+mix. The export uses the selected input device and design, position, size and
+highlight color. The original clip retains its separate, optional input track.
+
 ## Devices and storage
 
 - Windows Raw Input captures physical keyboard state, mouse buttons, wheel and
