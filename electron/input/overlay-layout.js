@@ -21,4 +21,20 @@ function overlayRect(picture, ratio, prefs) {
 function dragPosition(rect, dx, dy, startX, startY) {
   return { preset: 'free', x: rect.travelX ? clamp(startX + dx / rect.travelX, 0, 1) : 0, y: rect.travelY ? clamp(startY + dy / rect.travelY, 0, 1) : 0 }
 }
-module.exports = { preferences, overlayRect, dragPosition, clamp, DEFAULTS }
+function videoPicture(video) {
+  const box = video.getBoundingClientRect()
+  const width = video.videoWidth || box.width, height = video.videoHeight || box.height
+  const fit = getComputedStyle(video).objectFit === 'cover' ? Math.max : Math.min
+  const scale = fit(box.width / width, box.height / height)
+  const drawnWidth = width * scale, drawnHeight = height * scale
+  return {
+    left: Math.max(0, (box.width - drawnWidth) / 2),
+    top: Math.max(0, (box.height - drawnHeight) / 2),
+    sourceLeft: Math.max(0, (drawnWidth - box.width) / 2),
+    sourceTop: Math.max(0, (drawnHeight - box.height) / 2),
+    width: Math.min(box.width, drawnWidth),
+    height: Math.min(box.height, drawnHeight),
+    ratio: 1 / scale,
+  }
+}
+module.exports = { preferences, overlayRect, dragPosition, videoPicture, clamp, DEFAULTS }

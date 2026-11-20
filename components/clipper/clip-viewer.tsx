@@ -141,7 +141,12 @@ export function ClipViewer() {
   const [range, setRange] = React.useState<[number, number]>([0, 0])
   const [saveOpen, setSaveOpen] = React.useState(false)
   const [deleteOpen, setDeleteOpen] = React.useState(false)
-  const [busy, setBusy] = React.useState<TrimMode | null>(null)
+  const [busy, setBusy] = React.useState<TrimMode | 'inputs' | null>(null)
+  const [editingOriginal, setEditingOriginal] = React.useState(false)
+  const savedPlayback = !!clip?.savedEdit && !editingOriginal
+  const markerOffset = savedPlayback ? clip?.savedEdit?.start ?? 0 : 0
+  const markers = (clip?.markers ?? []).map(marker => ({ ...marker, timeSec: marker.timeSec - markerOffset }))
+    .filter(marker => !savedPlayback || (marker.timeSec >= 0 && marker.timeSec < (clip?.durationSec ?? 0)))
   const releasing = busy === 'overwrite'
   const restoreSelection = React.useRef<{ time: number; range: [number, number] } | null>(null)
   const [exporting, setExporting] = React.useState(false)
@@ -161,7 +166,7 @@ export function ClipViewer() {
     api.getClipUrl(clip).then((u) => {
       if (cancelled) return api.releaseClipUrl(u)
       url = u
-      setSrc(u)
+      setSrc(editingOriginal && clip.savedEdit ? u + '&edit=1' : u)
     })
     return () => {
       cancelled = true
@@ -169,7 +174,7 @@ export function ClipViewer() {
     }
     // sizeBytes changes after an in-place trim and fileName after a rename;
     // either way the URL we hold is stale and has to be rebuilt.
-  }, [api, clip?.id, clip?.sizeBytes, clip?.fileName, clip?.mediaRevision, releasing]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [api, clip?.id, clip?.sizeBytes, clip?.fileName, clip?.mediaRevision, releasing, editingOriginal]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // The scrub strip is rendered by ffmpeg on first open and cached from then on.
   React.useEffect(() => {
@@ -197,12 +202,13 @@ export function ClipViewer() {
     setPlaying(false)
     setEditingTitle(false)
     setSpeed(1)
+    setEditingOriginal(false)
     setMix(clip?.mix ?? DEFAULT_MIX)
   }, [clip?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist the levels shortly after the user stops dragging.
   React.useEffect(() => {
-    if (!api || !clip || busy) return
+    if (!api || !clip || busy || savedPlayback) return
     const saved = clip.mix ?? DEFAULT_MIX
     const same =
       saved.game === mix.game &&
@@ -214,7 +220,29 @@ export function ClipViewer() {
     if (same) return
     const timer = window.setTimeout(() => { void api.setMix(clip.id, mix).then(() => refreshClips()).catch(() => {}) }, 600)
     return () => window.clearTimeout(timer)
-  }, [api, clip, mix, refreshClips, busy])
+  }, [api, clip, mix, refreshClips, busy, savedPlayback])
+
+  React.useEffect(() => {
+    const onStart = (event: Event) => {
+      if (event.target === videoRef.current) flushSync(() => setBusy('inputs'))
+    }
+    const onEnd = (event: Event) => {
+      if (event.target !== videoRef.current) return
+      if (event.type === 'clipper:input-save-end') { setBusy(null); return }
+      void refreshClips().then(() => {
+        restoreSelection.current = null
+        setEditingOriginal(false)
+        if (event.type === 'clipper:input-restored') setMix(DEFAULT_MIX)
+      }).catch(() => {}).finally(() => setBusy(null))
+    }
+    const events = ['clipper:input-saved', 'clipper:input-restored', 'clipper:input-save-end']
+    document.addEventListener('clipper:input-save-start', onStart)
+    events.forEach(event => document.addEventListener(event, onEnd))
+    return () => {
+      document.removeEventListener('clipper:input-save-start', onStart)
+      events.forEach(event => document.removeEventListener(event, onEnd))
+    }
+  }, [refreshClips])
 
   React.useEffect(() => {
     const el = videoRef.current
@@ -373,14 +401,14 @@ export function ClipViewer() {
 
   return (
     <>
-      <Dialog open={!!clip} onOpenChange={(o) => { if (busy) return; if (!o) { if (clip && api) void api.setMix(clip.id, mix).then(() => refreshClips()).catch(() => {}); setViewingClipId(null) } }}>
+      <Dialog open={!!clip} onOpenChange={(o) => { if (busy) return; if (!o) { if (clip && api && !clip.savedEdit) void api.setMix(clip.id, mix).then(() => refreshClips()).catch(() => {}); setViewingClipId(null) } }}>
         <DialogContent
           className="flex h-[94vh] max-h-[94vh] w-[min(1150px,96vw)] flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
           showCloseButton
         >
           {clip && (
             <>
-              <DialogHeader className="shrink-0 border-b px-5 py-3.5 text-left">
+              <DialogHeader inert={busy === 'inputs'} className="shrink-0 border-b px-5 py-3.5 text-left">
                 <div className="flex items-start justify-between gap-4 pr-8">
                   <div className="flex min-w-0 flex-col gap-1">
                     {editingTitle ? (
@@ -438,6 +466,12 @@ export function ClipViewer() {
                       </span>
                     </DialogDescription>
                   </div>
+                  {clip.savedEdit && <Button variant="outline" size="sm" onClick={() => {
+                    const edit = clip.savedEdit
+                    if (!editingOriginal && edit) restoreSelection.current = { time: edit.start, range: [edit.start, edit.end] }
+                    else restoreSelection.current = null
+                    setEditingOriginal(!editingOriginal)
+                  }}>{editingOriginal ? 'Ver archivo guardado' : 'Editar original'}</Button>}
                 </div>
               </DialogHeader>
 
@@ -447,8 +481,12 @@ export function ClipViewer() {
                   <video
                     ref={videoRef}
                     data-input-export-mix={JSON.stringify(mix)}
+                    data-save-range={JSON.stringify(range)}
+                    data-saved-edit={!!clip.savedEdit}
+                    data-editing-original={editingOriginal}
+                    data-saved-input-prefs={JSON.stringify(clip.savedEdit?.prefs ?? null)}
                     src={src ?? undefined}
-                    className="mx-auto h-full min-h-0 max-h-[44vh] w-full bg-black object-contain"
+                    className="absolute inset-0 h-full w-full bg-black object-cover"
                     onLoadedMetadata={onLoaded}
                     onDurationChange={onLoaded}
                     onTimeUpdate={onTimeUpdate}
@@ -563,7 +601,7 @@ export function ClipViewer() {
               </div>
 
               {/* ---------- timeline + actions ---------- */}
-              <div className="flex shrink-0 flex-col gap-3 border-t px-5 py-3.5">
+              <div inert={busy === 'inputs'} className="flex shrink-0 flex-col gap-3 border-t px-5 py-3.5">
                 <TrimBar
                   duration={duration}
                   current={current}
@@ -571,12 +609,12 @@ export function ClipViewer() {
                   onRangeChange={setRange}
                   onSeek={seek}
                   filmstrip={strip}
-                  markers={clip.markers}
+                  markers={markers}
                 />
 
-                {!!clip.markers?.length && <div className="flex items-center gap-2 overflow-x-auto pb-1" aria-label="Momentos destacados"><span className="shrink-0 text-xs text-muted-foreground">Destacados</span>{clip.markers.map(marker => <button type="button" key={marker.id} className="shrink-0 rounded-md border px-2 py-1 text-xs hover:bg-muted" onClick={() => seek(marker.timeSec)}>{marker.label} · {formatClock(marker.timeSec)}</button>)}</div>}
+                {!!markers.length && <div className="flex items-center gap-2 overflow-x-auto pb-1" aria-label="Momentos destacados"><span className="shrink-0 text-xs text-muted-foreground">Destacados</span>{markers.map(marker => <button type="button" key={marker.id} className="shrink-0 rounded-md border px-2 py-1 text-xs hover:bg-muted" onClick={() => seek(marker.timeSec)}>{marker.label} · {formatClock(marker.timeSec)}</button>)}</div>}
 
-                {api && <AudioLayers key={clip.id} clip={clip} api={api} mix={mix} setMix={setMix} videoRef={videoRef} src={src} volume={volume} muted={muted} />}
+                {api && <div inert={savedPlayback}><AudioLayers key={clip.id} clip={savedPlayback ? { ...clip, micFile: null, audioApps: [] } : clip} api={api} mix={savedPlayback ? DEFAULT_MIX : mix} setMix={setMix} videoRef={videoRef} src={src} volume={volume} muted={muted} /></div>}
 
                 <div className="flex items-center gap-2">
                   {isTrimmed && (
@@ -589,7 +627,7 @@ export function ClipViewer() {
                   <Button variant="ghost" size="sm" onClick={() => setRange([0, duration])} disabled={!isTrimmed}>
                     {t('viewer.reset')}
                   </Button>
-                  <Button size="sm" onClick={() => setSaveOpen(true)} disabled={!isTrimmed || trimmedLength < 0.5}>
+                  <Button size="sm" onClick={() => setSaveOpen(true)} disabled={!!clip.savedEdit || !isTrimmed || trimmedLength < 0.5}>
                     <Scissors data-icon="inline-start" />
                     {t('viewer.saveTrim')}
                   </Button>
@@ -607,7 +645,7 @@ export function ClipViewer() {
                       variant="ghost"
                       size="sm"
                       onClick={async () => {
-                        await api?.setMix(clip.id, mix)
+                        if (!clip.savedEdit) await api?.setMix(clip.id, mix)
                         const okCopy = await api?.copyClipFile(clip.id)
                         if (okCopy) toast.success(t('viewer.copied'))
                         else toast.error(t('viewer.copyFailed'))
@@ -617,7 +655,7 @@ export function ClipViewer() {
                       {t('viewer.copyFile')}
                     </Button>
                   )}
-                  <Button variant="ghost" size="sm" onClick={async () => { await api?.setMix(clip.id, mix); await api?.exportClip(clip.id) }}>
+                  <Button variant="ghost" size="sm" onClick={async () => { if (!clip.savedEdit) await api?.setMix(clip.id, mix); await api?.exportClip(clip.id) }}>
                     <Download data-icon="inline-start" />
                     {isDesktop ? t('viewer.export') : t('viewer.download')}
                   </Button>
@@ -629,7 +667,7 @@ export function ClipViewer() {
                       onClick={async () => {
                         setExporting(true)
                         try {
-                          await api?.setMix(clip.id, mix)
+                          if (!clip.savedEdit) await api?.setMix(clip.id, mix)
                           await api?.exportClip(clip.id, 'mp4')
                         } catch (err) {
                           toast.error(

@@ -27,7 +27,7 @@ async function main() {
   await fs.writeFile(path.join(profile, 'migrations.json'), '["mic-on-1.3"]')
   const executable = process.env.CLIPPER_ELECTRON_PATH || require('electron')
   child = spawn(executable, [root, '--remote-debugging-port=0', '--hidden'], {
-    env: { ...process.env, CLIPPER_TEST_DATA: profile, CLIPPER_TEST_INPUT_EXPORT: '1' }, windowsHide: true,
+    env: { ...process.env, CLIPPER_TEST_DATA: profile }, windowsHide: true,
     stdio: ['ignore', 'ignore', 'pipe'],
   })
   child.on('error', error => { logs += error.stack })
@@ -85,7 +85,8 @@ async function main() {
   } else {
     execFileSync(require('ffmpeg-static'), [
       '-y', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i',
-      'color=c=0x172131:s=640x360:d=3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+      'color=c=0x172131:s=640x360:d=3', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest',
       path.join(clipsDir, 'input-test.mp4'),
     ], { windowsHide: true })
     saved = {
@@ -169,6 +170,7 @@ async function main() {
   assert.equal(await page.getByLabel('Posición del mapa').inputValue(),'free')
   assert.ok((await overlay.boundingBox()).x < start.x-30)
   await overlay.press('ArrowLeft');await overlay.press('+')
+  await page.getByLabel('Tamaño del mapa').fill('30')
   const moved=await overlay.boundingBox()
   const handle=await page.locator('.ci-resize').boundingBox()
   await page.mouse.move(handle.x+handle.width/2,handle.y+handle.height/2);await page.mouse.down();await page.mouse.move(handle.x+handle.width/2+35,handle.y+handle.height/2+25,{steps:5});await page.mouse.up()
@@ -209,15 +211,21 @@ async function main() {
   await video.evaluate(v=>{v.pause();v.currentTime=.65})
   const expectedBounds = await video.evaluate(v=>{
     const video=v.getBoundingClientRect(),map=document.querySelector('.ci-overlay').getBoundingClientRect()
-    const width=Math.min(video.width,video.height*v.videoWidth/v.videoHeight),height=width*v.videoHeight/v.videoWidth
+    if (getComputedStyle(v).objectFit !== 'cover') throw Error('The clip must fill the player')
+    const width=Math.max(video.width,video.height*v.videoWidth/v.videoHeight),height=width*v.videoHeight/v.videoWidth
     const x=(map.left-video.left-(video.width-width)/2)*640/width
     const y=(map.top-video.top-(video.height-height)/2)*360/height
     return {x,y,right:x+map.width*640/width,bottom:y+map.height*360/height}
   })
-  await page.getByRole('button',{name:'Guardar input',exact:true}).click()
-  await page.waitForSelector('.ci-save:not([disabled])',{timeout:70000})
-  await page.getByText('Copia con inputs guardada',{exact:true}).waitFor({timeout:70000})
-  const baked = path.join(profile,'inputs-export.mp4')
+  const save = page.getByRole('button',{name:'Guardar cambios',exact:true})
+  const savedFile = () => page.waitForFunction(() => {
+    const v = document.querySelector('.clip-stage-video video')
+    return v?.dataset.savedEdit === 'true' && v.readyState >= 2 && !v.currentSrc.includes('&edit=1')
+  }, null, { timeout: 70000 })
+  await save.click()
+  await savedFile()
+  const baked = path.join(clipsDir, saved.fileName)
+  assert.notEqual(before, await digest(), 'Saving replaces the file at its original path')
   const extract = (file,t) => execFileSync(require('ffmpeg-static'), [
     '-hide_banner','-loglevel','error','-ss',String(t),'-i',file,'-vf','scale=640:360',
     '-frames:v','1','-pix_fmt','rgb24','-f','rawvideo','pipe:1',
@@ -234,20 +242,41 @@ async function main() {
   assert.ok(freeHighlight.count>60&&freeHighlight.minX>=expectedBounds.x-2&&freeHighlight.minY>=expectedBounds.y-2&&
     freeHighlight.maxX<=expectedBounds.right+2&&freeHighlight.maxY<=expectedBounds.bottom+2,
     JSON.stringify({freeHighlight,expectedBounds}))
+  await page.getByRole('button',{name:'Editar original',exact:true}).click()
+  await page.waitForSelector('.ci-save:not([disabled])')
+  assert.equal(await page.locator('.ci-overlay').isVisible(), true)
   await page.getByLabel('Tipo de mapa').selectOption('auto')
   await page.getByLabel('Diseño de teclado').selectOption('full')
   await page.getByLabel('Posición del mapa').selectOption('right')
   await page.getByLabel('Tamaño del mapa').fill('45')
-  await page.getByRole('button',{name:'Guardar input',exact:true}).click()
-  await page.waitForSelector('.ci-save:not([disabled])',{timeout:70000})
-  await page.getByText('Copia con inputs guardada',{exact:true}).waitFor({timeout:70000})
-  const keyHighlight=highlightBounds(extract(baked,.65))
-  const padHighlight=highlightBounds(extract(baked,1.75))
-  assert.ok(keyHighlight.count>60&&keyHighlight.minX>335&&keyHighlight.minY>230,JSON.stringify(keyHighlight))
-  assert.ok(padHighlight.count>60&&padHighlight.minX>335&&padHighlight.minY>150,JSON.stringify(padHighlight))
-  assert.ok(highlightBounds(extract(baked,.2)).count<20,'Highlight is absent before the press')
-  assert.equal(before,await digest(),'Input export leaves the original video unchanged')
-  console.log('PASS MP4 export burns in keyboard and PS5 highlights at the chosen preset or free position and time')
+  for (let n=0;n<5;n++) await page.getByRole('slider',{name:'Inicio',exact:true}).press('ArrowRight')
+  await save.click()
+  await savedFile()
+  const keyHighlight=highlightBounds(extract(baked,.15))
+  const padHighlight=highlightBounds(extract(baked,1.25))
+  assert.ok(keyHighlight.count>60&&keyHighlight.minX>335,JSON.stringify(keyHighlight))
+  assert.ok(padHighlight.count>60&&padHighlight.minX>335,JSON.stringify(padHighlight))
+  assert.ok(highlightBounds(extract(baked,.6)).count<20,'Highlight is absent between presses')
+  assert.ok(Math.abs(await video.evaluate(v=>v.duration)-2.5)<.12,'Saving applies the selected trim')
+  await page.getByRole('button',{name:'Restaurar original',exact:true}).click()
+  await page.waitForSelector('video[data-saved-edit=false]')
+  assert.equal(before,await digest(),'Restoring recovers the exact original file')
+  const originalTrack = await invoke('inputs:read', saved.fileName)
+  assert.deepEqual(originalTrack.frames[1].state.keys,keyboard.keys)
+  assert.deepEqual(originalTrack.frames[3].state.pads,controller.pads)
+  console.log('PASS save in place, re-edit with keyboard and PS5, and restore the original')
+  await page.waitForSelector('.ci-save:not([disabled])')
+  await page.getByRole('button',{name:'Computadora',exact:true}).click()
+  await save.click()
+  await savedFile()
+  assert.equal(highlightBounds(extract(baked,.65)).count,0,'Hidden inputs do not appear in the saved file')
+  const audio = execFileSync(require('ffmpeg-static'), [
+    '-hide_banner','-loglevel','error','-i',baked,'-vn','-f','s16le','pipe:1',
+  ],{windowsHide:true,maxBuffer:2*1024*1024})
+  assert.ok(audio.length>0 && audio.every(byte=>byte===0),'Saved file uses the muted audio mix')
+  await page.getByRole('button',{name:'Restaurar original',exact:true}).click()
+  await page.waitForSelector('video[data-saved-edit=false]')
+  assert.equal(before,await digest())
   const renamed = await invoke('clips:rename-file', saved.id, 'input-test-renamed')
   assert.equal(renamed.inputsFile, 'input-test-renamed.inputs.json')
   const trimmed = await invoke('clips:trim', { id: renamed.id, startSec: .5, endSec: 2.5, mode: 'new' })

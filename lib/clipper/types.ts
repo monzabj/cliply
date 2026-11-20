@@ -154,6 +154,13 @@ export interface ClipMeta {
   audioApps?: AppAudioTrack[]
   audioWarning?: string | null
   mediaRevision?: string
+  savedEdit?: {
+    originalSize: number
+    originalDuration: number
+    start: number
+    end: number
+    prefs: Record<string, string | number> | null
+  } | null
   storageDir?: string | null
   recording?: boolean
   markers?: RecordingMarker[]

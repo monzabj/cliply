@@ -40,14 +40,15 @@ Layout, drawing, highlight color and size persist locally across restarts. Visib
 persists: every clip still opens with its input map hidden. When multiple
 controllers occur in a track, choose one or follow the last active controller.
 
-The video itself stays unchanged. Existing export/copy actions produce a clean
-video without baking in an overlay. To move an editable input track elsewhere,
-keep the video and its `.inputs.json` together. Older clips have no input data;
-it cannot be reconstructed after recording.
+**Guardar cambios** writes the selected range, current audio mix and visible
+animated map to the clip's existing file. Use **Copiar archivo** or drag the
+video out of its folder to share the rendered result.
 
-Click **Guardar input** to export an MP4 with the animated map and current audio
-mix. The export uses the selected input device and design, position, size and
-highlight color. The original clip retains its separate, optional input track.
+Clipper keeps the clean video in `.originals/`, plus the recorded input and
+audio tracks in the library. **Editar original** reopens those layers and loads
+the saved range and map settings. **Restaurar original** puts the clean video
+back at its original path. Clips with no recorded inputs can still save their
+audio and trim edits.
 
 ## Devices and storage
 

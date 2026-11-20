@@ -4,7 +4,7 @@ const {drawKeyboard,drawPad}=require('./basic-renderer')
 const {DEFAULT_COLOR}=require('./colors')
 const {createControllerSkin}=require('./controller-skins')
 const {createKeyboardMap}=require('./keyboard-map')
-const {preferences,overlayRect,dragPosition,clamp}=require('./overlay-layout')
+const {preferences,overlayRect,dragPosition,videoPicture,clamp}=require('./overlay-layout')
 const {exportInputs}=require('./overlay-export-renderer')
 const STORAGE='clipper-input-overlay-v2'
 function frameAt(frames,time){let lo=0,hi=frames.length-1,best=-1;while(lo<=hi){const mid=(lo+hi)>>1;if(frames[mid].t<=time){best=mid;lo=mid+1}else hi=mid-1}return best<0?null:frames[best]}
@@ -48,7 +48,8 @@ function attachPlayer(video){
     <button type="button" class="ci-button ci-edit" aria-pressed="false" disabled>Mover / tamaño</button>
     <label class="ci-scale">Tamaño <input type="range" min="20" max="100" step="1" aria-label="Tamaño del mapa"><output></output></label>
     <label class="ci-color">Pulsación <input type="color" aria-label="Color de pulsación"></label><button type="button" class="ci-button ci-reset-color" aria-label="Restablecer color menta" title="Restablecer color menta">↺</button>
-    <button type="button" class="ci-button ci-save" title="Exporta una copia MP4 con el mapa visible" disabled>Guardar input</button>
+    <button type="button" class="ci-button ci-save" title="Guarda el recorte, la mezcla y el mapa visible en el archivo del clip" disabled>Guardar cambios</button>
+    <button type="button" class="ci-button ci-restore" hidden>Restaurar original</button>
     <span role="status" class="ci-message">Cargando inputs…</span>`
   const overlay=document.createElement('div');overlay.className='ci-overlay';overlay.hidden=true;overlay.tabIndex=-1
   overlay.setAttribute('role','group');overlay.setAttribute('aria-label','Mapa de inputs. Arrastrá para mover; flechas para ajustar y más o menos para cambiar tamaño.')
@@ -57,6 +58,7 @@ function attachPlayer(video){
   overlay.append(surface,handle);stage.prepend(bar);host.append(overlay)
   const button=bar.querySelector('.ci-toggle'),edit=bar.querySelector('.ci-edit'),message=bar.querySelector('.ci-message'),scale=bar.querySelector('input[type=range]'),output=bar.querySelector('output'),color=bar.querySelector('input[type=color]')
   const save=bar.querySelector('.ci-save')
+  const restore=bar.querySelector('.ci-restore')
   const [mode,skin,keyboard,controller,position]=bar.querySelectorAll('select')
   mode.value=prefs.mode;skin.value=prefs.skin;keyboard.value=prefs.keyboard;position.value=prefs.preset
   let src='',track=null,visible=false,editing=false,request=0,raf=0,destroyed=false,renderer=null,renderKey='',kindChanges=[],controllerChanges=[],rect=null,drag=null
@@ -67,27 +69,47 @@ function attachPlayer(video){
   function setVisible(value){visible=value;overlay.hidden=!value;button.textContent=value?'Ocultar inputs':'Mostrar inputs';button.setAttribute('aria-pressed',String(value));edit.disabled=!value;if(!value)setEditing(false);else draw()}
   button.onclick=()=>setVisible(!visible);edit.onclick=()=>setEditing(!editing)
   save.onclick=async()=>{
-    if(!track||saving)return
+    if(save.disabled||saving||video.readyState<1)return
+    if(src!==video.src)return
     const token=request
     const rules={...prefs,controller:controller.value}
-    const inputTrack=track
+    const inputTrack=visible?track:null
     const changes=kindChanges, pads=controllerChanges
     saving=true;save.disabled=true
-    message.textContent='Preparando exportación…'
-    setVisible(true);setEditing(false)
+    message.textContent='Preparando mapa…'
+    setEditing(false)
+    let done=false
+    video.pause()
+    video.dispatchEvent(new Event('clipper:input-save-start',{bubbles:true}))
     try{
-      const done=await exportInputs({
+      done=await exportInputs({
         video,src,prefs:rules,track:inputTrack,
         sample:time=>selectFrame(inputTrack,time,rules,changes,pads),
         createRenderer:key=>createRenderer(key,rules),
         canceled:()=>destroyed||token!==request,
         report:text=>{if(!destroyed&&token===request)message.textContent=text},
       })
-      if(!destroyed&&token===request)message.textContent=done?'Copia con inputs guardada':'Exportación cancelada'
+      if(done){track=null;setVisible(false);button.disabled=true}
+      if(!destroyed&&token===request)message.textContent=done?'Cambios guardados en el clip':'Guardado cancelado'
     }catch(error){
       if(!destroyed&&token===request)message.textContent=error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
     }finally{
-      saving=false;save.disabled=!track
+      saving=false;save.disabled=done
+      video.dispatchEvent(new Event(done?'clipper:input-saved':'clipper:input-save-end',{bubbles:true}))
+    }
+  }
+  restore.onclick=async()=>{
+    if(saving)return
+    saving=true;restore.disabled=true;save.disabled=true;video.pause()
+    video.dispatchEvent(new Event('clipper:input-save-start',{bubbles:true}))
+    let done=false
+    try{
+      await ipcRenderer.invoke('inputs:restore',video.src)
+      done=true
+    }catch(error){message.textContent=error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}
+    finally{
+      saving=false;restore.disabled=false;save.disabled=video.dataset.savedEdit==='true'&&video.dataset.editingOriginal!=='true'
+      video.dispatchEvent(new Event(done?'clipper:input-restored':'clipper:input-save-end',{bubbles:true}))
     }
   }
   function changed(){Object.assign(prefs,{mode:mode.value,skin:skin.value,keyboard:keyboard.value,controller:controller.value,preset:position.value});persist();draw()}
@@ -128,10 +150,17 @@ function attachPlayer(video){
     src=next;track=null;setVisible(false);button.disabled=true;save.disabled=true;message.textContent='Cargando inputs…';const token=++request
     try{
       const url=new URL(next)
-      if(url.protocol!=='clip:'||url.host!=='local'){message.textContent='Sin pista de inputs';return}
-      const loaded=await ipcRenderer.invoke('inputs:read',decodeURIComponent(url.pathname.slice(1)))
+      const saved=video.dataset.savedEdit==='true', original=url.searchParams.get('edit')==='1'
+      restore.hidden=!saved
+      if(url.protocol!=='clip:'){message.textContent='Sin pista de inputs';return}
+      if(saved&&!original){message.textContent='Cambios guardados en el clip';return}
+      const loaded=url.host==='local'?await ipcRenderer.invoke('inputs:read',decodeURIComponent(url.pathname.slice(1))):null
       if(destroyed||token!==request)return
-      track=loaded;button.disabled=!track;save.disabled=!track||saving;kindChanges=[];controllerChanges=[];let previous=neutral();const pads=new Map()
+      track=loaded;button.disabled=!track;save.disabled=saving;kindChanges=[];controllerChanges=[];let previous=neutral();const pads=new Map()
+      const savedPrefs=original&&JSON.parse(video.dataset.savedInputPrefs||'null')
+      if(savedPrefs){
+        Object.assign(prefs,preferences(savedPrefs));mode.value=prefs.mode;skin.value=prefs.skin;keyboard.value=prefs.keyboard;sync()
+      }
       if(track)for(const f of track.frames){
         const a=f.state,b=previous
         const kbm=JSON.stringify(a.keys)!==JSON.stringify(b.keys)||JSON.stringify(a.mouse.buttons)!==JSON.stringify(b.mouse.buttons)||a.mouse.dx||a.mouse.dy||a.mouse.wheel
@@ -148,7 +177,9 @@ function attachPlayer(video){
       controller.replaceChildren(new Option('Control automático','auto'))
       for(const [id,p] of pads)controller.append(new Option(`${p.kind==='dualsense'?'DualSense':'Control'} ${Number(id)+1}`,id))
       controller.value=pads.has(prefs.controller)?prefs.controller:'auto';controller.hidden=pads.size<2
-      lastFrame=null;lastPad=null;message.textContent=track?'Pista disponible · oculta por defecto':'Este clip no tiene inputs grabados'
+      lastFrame=null;lastPad=null
+      if(savedPrefs&&track)setVisible(true)
+      message.textContent=track?(visible?'Pista disponible':'Pista disponible · oculta por defecto'):'Este clip no tiene inputs grabados'
     }catch{if(token===request)message.textContent='No se pudo cargar la pista de inputs'}
   }
   function draw(){
@@ -161,9 +192,9 @@ function attachPlayer(video){
     }
     const videoRect=video.getBoundingClientRect(),outer=host.getBoundingClientRect()
     if(!videoRect.width||!videoRect.height)return
-    const ratio=video.videoWidth&&video.videoHeight?video.videoWidth/video.videoHeight:videoRect.width/videoRect.height
-    const width=Math.min(videoRect.width,videoRect.height*ratio),height=width/ratio
-    const picture={left:videoRect.left-outer.left+(videoRect.width-width)/2,top:videoRect.top-outer.top+(videoRect.height-height)/2,width,height}
+    const picture=videoPicture(video)
+    picture.left+=videoRect.left-outer.left
+    picture.top+=videoRect.top-outer.top
     rect=overlayRect(picture,renderer.ratio,prefs)
     Object.assign(overlay.style,{left:`${rect.left}px`,top:`${rect.top}px`,width:`${rect.width}px`,height:`${rect.height}px`})
     const noData=time>track.durationMs||time<(track.coverageStartMs||0)

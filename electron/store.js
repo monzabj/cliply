@@ -3,6 +3,9 @@ const path = require('node:path')
 const fs = require('node:fs/promises')
 const { setTimeout: delay } = require('node:timers/promises')
 const { samePhysicalSource, pinHotkeys } = require('./source-identity')
+const { originalPath } = require('./media-paths')
+const mediaFiles = require('./media-files')
+const clipBytes = clip => (clip.sizeBytes || 0) + (clip.audioBytes || 0) + (clip.savedEdit?.originalSize || 0)
 
 const DEFAULT_SESSION_ID = 'main'
 
@@ -270,7 +273,7 @@ async function removeShot(id) {
 async function diskUsage() {
   const [clips, shots] = await Promise.all([listClips(), listShots()])
   return (
-    clips.reduce((acc, c) => acc + (c.sizeBytes || 0)+(c.audioBytes||0), 0) +
+    clips.reduce((acc, c) => acc + clipBytes(c), 0) +
     shots.reduce((acc, s) => acc + (s.sizeBytes || 0), 0)
   )
 }
@@ -286,27 +289,31 @@ async function enforceDiskLimit() {
 
   const clipsDir = settings.clipsDir
   const clips = (await listClips()).filter(c=>!c.recording) // Continuous recordings are never auto-pruned.
-  let total = clips.reduce((acc, c) => acc + (c.sizeBytes || 0)+(c.audioBytes||0), 0)
+  let total = clips.reduce((acc, c) => acc + clipBytes(c), 0)
   if (total <= limitBytes) return 0
 
   let removed = 0
   // Walk from the oldest end.
   for (let i = clips.length - 1; i >= 0 && total > limitBytes; i--) {
-    const clip = clips[i]
+    const { id } = clips[i]
     try {
-      await fs.rm(path.join(clipsDir, clip.fileName), { force: true })
-      if (clip.thumbnail) await fs.rm(path.join(clipsDir, '.thumbs', clip.thumbnail), { force: true })
-      await fs.rm(path.join(clipsDir, '.thumbs', `${clip.id}-strip.jpg`), { force: true })
-      await fs.rm(path.join(clipsDir, '.thumbs', `${clip.id}-preview.mp4`), { force: true })
-      if (clip.micFile) await fs.rm(path.join(clipsDir, clip.micFile), { force: true })
-      for(const track of clip.audioApps||[])await fs.rm(path.join(clipsDir,track.file),{force:true})
-      if (clip.inputsFile) await fs.rm(path.join(clipsDir, clip.inputsFile), { force: true })
+      await mediaFiles.edit(id, async () => {
+        const clip = await getClip(id)
+        if (!clip) return
+        await fs.rm(path.join(clipsDir, clip.fileName), { force: true })
+        const extras = [clip.micFile, clip.inputsFile, ...(clip.audioApps || []).map(track => track.file)]
+          .filter(Boolean).map(file => path.join(clipsDir, file))
+        if (clip.savedEdit) extras.push(originalPath(clip, clipsDir))
+        for (const name of [clip.thumbnail, `${id}-strip.jpg`, `${id}-preview.mp4`].filter(Boolean))
+          extras.push(path.join(clipsDir, '.thumbs', name))
+        await Promise.all(extras.map(file => fs.rm(file, { force: true }).catch(() => {})))
+        await removeClip(id)
+        total -= clipBytes(clip)
+        removed++
+      })
     } catch {
-      /* keep going; a locked file should not stall the cleanup */
+      /* An active edit or locked file can be cleaned up on the next pass. */
     }
-    total -= (clip.sizeBytes||0)+(clip.audioBytes||0)
-    removed++
-    await removeClip(clip.id)
   }
   return removed
 }

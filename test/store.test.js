@@ -5,12 +5,13 @@ const syncFs = require('node:fs')
 const vm = require('node:vm')
 const path = require('node:path')
 const os = require('node:os')
+const requireFromStore = require('node:module').createRequire(path.join(__dirname, '../electron/store.js'))
 async function fixture(settings = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'clipper-store-test-'))
   await fs.writeFile(path.join(dir, 'settings.json'), JSON.stringify({ clipsDir: path.join(dir, 'clips'), ...settings }))
   await fs.writeFile(path.join(dir, 'migrations.json'), '["mic-on-1.3"]')
   const context = { module: { exports: {} }, require: name => name === 'electron' ? { app: { getPath: () => dir } }
-    : name === './source-identity' ? require('../electron/source-identity') : require(name) }
+    : requireFromStore(name) }
   vm.runInNewContext(syncFs.readFileSync(path.join(__dirname, '../electron/store.js'), 'utf8'), context)
   const store = context.module.exports
   await store.ensureDirs()

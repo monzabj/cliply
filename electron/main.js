@@ -39,7 +39,7 @@ const appAudio = require('./audio/recorder')
 const {normalizeMix} = require('./audio/mix')
 const continuous = require('./continuous')
 const mediaFiles = require('./media-files')
-const {directory:mediaDirectory,mediaPath,cutMarkers}=require('./media-paths')
+const {directory:mediaDirectory,mediaPath,originalPath,cutMarkers}=require('./media-paths')
 const appLayers = (clip, dir) => (clip.audioApps||[]).map(track=>({...track,file:mediaPath(clip,dir,track.file)}))
 let clipBuffersArmed=false
 function updateCaptureHelpers(){const armed=clipBuffersArmed||continuous.active();inputs.setArmed(clipBuffersArmed);appAudio.setArmed(armed)}
@@ -280,11 +280,17 @@ function registerProtocols() {
     if(url.host==='media'){
       const [id,kind,file]=url.pathname.slice(1).split('/').map(decodeURIComponent),clip=await store.getClip(id)
       if(!clip)return new Response('Not found',{status:404})
+      if (kind === 'video' && clip.savedEdit && url.searchParams.get('edit') === '1')
+        return serveFile(originalPath(clip, clipsDir), request)
       const name=kind==='video'?clip.fileName:kind==='mic'?clip.micFile:kind==='app'&&clip.audioApps?.some(t=>t.file===file)?file:null
       if(!name)return new Response('Not found',{status:404})
       return serveFile(mediaPath(clip,clipsDir,name),request)
     }
     const name = decodeURIComponent(url.pathname.replace(/^\//, ''))
+    if (url.host === 'local' && url.searchParams.get('edit') === '1') {
+      const clip = (await store.listClips()).find(c => !c.storageDir && c.fileName === name && c.savedEdit)
+      return clip ? serveFile(originalPath(clip, clipsDir), request) : new Response('Not found', { status: 404 })
+    }
     const base =
       url.host === 'thumbs'
         ? path.join(clipsDir, '.thumbs')
@@ -738,10 +744,10 @@ async function drainPreviews() {
         const started = Date.now()
         await ffmpeg.previewProxy(
           mediaPath(clip,clipsDir),
-          clip.micFile ? mediaPath(clip,clipsDir,clip.micFile) : null,
-          clip.mix,
+          !clip.savedEdit && clip.micFile ? mediaPath(clip,clipsDir,clip.micFile) : null,
+          clip.savedEdit ? undefined : clip.mix,
           path.join(clipsDir, '.thumbs', previewName(clip.id)),
-          appLayers(clip,clipsDir),
+          clip.savedEdit ? [] : appLayers(clip,clipsDir),
           clip.recording ? 10 : null,
         )
         log.write('preview', `lista ${clip.fileName} (${Date.now() - started}ms)`)
@@ -1336,7 +1342,7 @@ function registerIpc() {
     }
   })
 
-  ipcMain.handle('clips:delete', async (_e, id) => {
+  ipcMain.handle('clips:delete', async (_e, id) => mediaFiles.edit(id, async () => {
     const clipsDir = await store.getClipsDir()
     const clip = await store.getClip(id)
     if (clip) {
@@ -1347,6 +1353,10 @@ function registerIpc() {
       // Recycle Bin rather than unlink: deleting a clip by accident should be undoable.
       const full = mediaPath(clip,clipsDir)
       await shell.trashItem(full).catch(() => fs.rm(full, { force: true }))
+      if (clip.savedEdit) {
+        const original = originalPath(clip, clipsDir)
+        await shell.trashItem(original).catch(() => fs.rm(original, { force: true }))
+      }
       if (clip.micFile) {
         const micPath = mediaPath(clip,clipsDir,clip.micFile)
         await shell.trashItem(micPath).catch(() => fs.rm(micPath, { force: true }))
@@ -1358,9 +1368,9 @@ function registerIpc() {
       await fs.rm(path.join(clipsDir, '.thumbs', previewName(clip.id)), { force: true })
     }
     await store.removeClip(id)
-  })
+  }))
 
-  ipcMain.handle('clips:set-mix', async (_e, id, mix) => {
+  ipcMain.handle('clips:set-mix', async (_e, id, mix) => mediaFiles.readJob(id, async () => {
     const clip = await store.getClip(id)
     if (!clip) return null
     const nextMix=normalizeMix(mix,clip.audioApps||[])
@@ -1371,13 +1381,13 @@ function registerIpc() {
     await fs.rm(path.join(await store.getClipsDir(), '.thumbs', previewName(id)), { force: true }).catch(() => {})
     queuePreview(id)
     return updated
-  })
+  }))
 
   /**
    * Renames the file on disk, keeping its extension. The microphone sidecar is
    * named after the clip, so it has to move too or the second audio layer is lost.
    */
-  ipcMain.handle('clips:rename-file', async (_e, id, baseName) => {
+  ipcMain.handle('clips:rename-file', async (_e, id, baseName) => mediaFiles.edit(id, async () => {
     const clip = await store.getClip(id)
     if (!clip) throw new Error('Clip not found')
 
@@ -1417,7 +1427,7 @@ function registerIpc() {
     await store.upsertClip(updated)
     log.write('biblioteca', `renombrado ${clip.fileName} -> ${fileName}`)
     return updated
-  })
+  }))
 
   ipcMain.handle('shots:rename-file', async (_e, id, baseName) => {
     const shot = await store.getShot(id)
@@ -1443,18 +1453,19 @@ function registerIpc() {
     return updated
   })
 
-  ipcMain.handle('clips:rename', async (_e, id, title) => {
+  ipcMain.handle('clips:rename', async (_e, id, title) => mediaFiles.readJob(id, async () => {
     const clip = await store.getClip(id)
     if (!clip) throw new Error('Clip not found')
     const updated = { ...clip, title }
     await store.upsertClip(updated)
     return updated
-  })
+  }))
 
   ipcMain.handle('clips:trim', async (_e, { id, startSec, endSec, mode }) => mediaFiles.edit(id, async () => {
     const clipsDir = await store.getClipsDir()
     const clip = await store.getClip(id)
     if (!clip) throw new Error('Clip not found')
+    if (clip.savedEdit) throw Error('Usá Editar original y Guardar cambios para modificar el recorte.')
     const input = mediaPath(clip,clipsDir)
     const ext = path.extname(clip.fileName) || '.webm'
     const durationSec = Math.round((endSec - startSec) * 10) / 10
@@ -1562,7 +1573,7 @@ function registerIpc() {
     if (!clip) return false
     const clipsDir=await store.getClipsDir()
     let full = mediaPath(clip,clipsDir)
-    if(clip.micFile||clip.audioApps?.length||!ffmpeg.isDefaultMix(clip.mix)){
+    if(!clip.savedEdit && (clip.micFile||clip.audioApps?.length||!ffmpeg.isDefaultMix(clip.mix))){
       const folder=path.join(app.getPath('temp'),'clipper-shares');await fs.mkdir(folder,{recursive:true})
       const mixed=path.join(folder,clip.id+path.extname(clip.fileName));await ffmpeg.renderMix(full,clip.micFile?mediaPath(clip,clipsDir,clip.micFile):null,clip.mix,mixed,{apps:appLayers(clip,clipsDir)});full=mixed
     }
@@ -1615,7 +1626,7 @@ function registerIpc() {
     if (result.canceled || !result.filePath) return
 
     const micPath = clip.micFile ? mediaPath(clip,clipsDir,clip.micFile) : null
-    if (micPath || clip.audioApps?.length || !ffmpeg.isDefaultMix(clip.mix)) {
+    if (!clip.savedEdit && (micPath || clip.audioApps?.length || !ffmpeg.isDefaultMix(clip.mix))) {
       // Video is copied, only the audio is rendered, so this stays fast.
       await ffmpeg.renderMix(input, micPath, clip.mix, result.filePath, { video: targetExt===currentExt?'copy':'encode', apps:appLayers(clip,clipsDir) })
     } else if (targetExt === 'mp4' && currentExt !== 'mp4') {
@@ -1772,7 +1783,7 @@ if (!gotLock) {
     setupDisplayMediaHandler()
     registerIpc()
     await inputs.install({ app, store, ipcMain })
-    require('./input/overlay-export').installInputExport({ ipcMain, dialog, store, window: () => win })
+    require('./input/overlay-export').installInputExport({ ipcMain, store })
     await appAudio.install({app,store,ipcMain,ffmpeg})
     await continuous.install({app,store,ipcMain,ffmpeg,appAudio,dialog,send,log,onActive:()=>{updateCaptureHelpers();setTrayState(clipBuffersArmed||continuous.active(),continuous.state().name)}})
     await store.ensureDirs()

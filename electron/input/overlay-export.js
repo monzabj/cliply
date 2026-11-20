@@ -1,16 +1,18 @@
 const fs = require('node:fs/promises')
+const { COPYFILE_EXCL } = require('node:fs').constants
 const path = require('node:path')
 const os = require('node:os')
 const { randomUUID } = require('node:crypto')
-const { mediaPath } = require('../media-paths')
+const { mediaPath, originalPath } = require('../media-paths')
 const mediaFiles = require('../media-files')
 const ffmpeg = require('../ffmpeg')
 const { readTrack } = require('./recorder')
+const { preferences } = require('./overlay-layout')
+const { normalizeMix } = require('../audio/mix')
 
-function installInputExport({ ipcMain, dialog, store, window }) {
+function installInputExport({ ipcMain, store }) {
   const jobs = new Map()
   const version = clip => String(clip.mediaRevision || clip.sizeBytes)
-  const key = file => process.platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file)
   const cleanup = async job => {
     if (jobs.get(job.sender) === job) jobs.delete(job.sender)
     job.sender.removeListener('destroyed', job.cancel)
@@ -23,37 +25,65 @@ function installInputExport({ ipcMain, dialog, store, window }) {
     return job
   }
 
-  ipcMain.handle('inputs:export:start', async ({ sender }, source, geometry) => {
-    if (jobs.has(sender)) throw Error('Ya hay una exportación en curso.')
-    const { width, height, x, y, mix } = geometry || {}
-    if (![width, height, x, y].every(Number.isInteger) || width < 2 || height < 2 ||
-        width > 8192 || height > 8192 || width * height > 36_000_000 || x < 0 || y < 0 || x >= width || y >= height)
-      throw Error('No se puede exportar con ese tamaño de video.')
+  const findClip = async (source) => {
     const url = new URL(source)
-    if (url.protocol !== 'clip:' || url.host !== 'local') throw Error('El clip no está disponible.')
+    const clipsDir = await store.getClipsDir()
+    const name = decodeURIComponent(url.pathname.split('/')[1] || '')
+    const clip = url.protocol === 'clip:' && (url.host === 'media'
+      ? await store.getClip(name)
+      : url.host === 'local' && (await store.listClips()).find(c => !c.storageDir && c.fileName === name))
+    if (!clip || version(clip) !== url.searchParams.get('v')) throw Error('Volvé a abrir el clip para guardar los cambios.')
+    return { clip, clipsDir, editing: url.searchParams.get('edit') === '1' }
+  }
+
+  const invalidate = async (clip, clipsDir, input) => {
+    const dir = path.join(clipsDir, '.thumbs')
+    const files = [`${clip.id}-strip.jpg`, `${clip.id}-preview.mp4`, clip.thumbnail].filter(Boolean).map(name => path.join(dir, name))
+    await mediaFiles.release(files, async () => {
+      if (clip.thumbnail) await ffmpeg.thumbnail(input, path.join(dir, clip.thumbnail)).catch(() => {})
+      await Promise.all(files.slice(0, 2).map(file => fs.rm(file, { force: true }).catch(() => {})))
+    })
+  }
+
+  async function replaceClip(clip, clipsDir, temp, updated) {
+    const input = mediaPath(clip, clipsDir)
+    const backup = temp + '.previous'
+    await mediaFiles.release([input], async () => {
+      await fs.link(input, backup).catch(() => fs.copyFile(input, backup))
+      await mediaFiles.replaceFile(temp, input)
+      try { await store.upsertClip(updated) }
+      catch (error) {
+        await mediaFiles.replaceFile(backup, input)
+        throw error
+      }
+      await invalidate(updated, clipsDir, input)
+    })
+    return updated
+  }
+
+  ipcMain.handle('inputs:export:start', async ({ sender }, source, geometry, edits) => {
+    if (jobs.has(sender)) throw Error('Ya hay una exportación en curso.')
+    const { width, height, x, y } = geometry || {}
+    if (geometry && (![width, height, x, y].every(Number.isInteger) || width < 2 || height < 2 ||
+        width > 8192 || height > 8192 || width * height > 36_000_000 || x < 0 || y < 0 || x >= width || y >= height))
+      throw Error('No se puede exportar con ese tamaño de video.')
     const job = { id: randomUUID(), sender, times: [] }
     jobs.set(sender, job)
     job.cancel = () => { if (!job.finishing) void cleanup(job) }
     sender.once('destroyed', job.cancel)
     sender.once('render-process-gone', job.cancel)
     try {
-      const clipsDir = await store.getClipsDir()
-      const clips = await store.listClips()
-      const name = decodeURIComponent(url.pathname.slice(1))
-      const clip = clips.find(c => !c.storageDir && c.fileName === name)
-      if (!clip || version(clip) !== url.searchParams.get('v') || !await readTrack(clip, clipsDir))
-        throw Error('Volvé a abrir el clip para exportar su pista de inputs.')
-      const defaultPath = path.join(clipsDir, path.parse(clip.fileName).name + ' con inputs.mp4')
-      const result = process.env.CLIPPER_TEST_DATA && process.env.CLIPPER_TEST_INPUT_EXPORT === '1'
-        ? { filePath: path.join(process.env.CLIPPER_TEST_DATA, 'inputs-export.mp4') }
-        : await dialog.showSaveDialog(window(), { defaultPath, filters: [{ name: 'Video MP4', extensions: ['mp4'] }] })
-      if (!result.filePath || result.canceled || jobs.get(sender) !== job) {
-        if (jobs.get(sender) === job) await cleanup(job)
-        return null
-      }
-      const output = /\.mp4$/i.test(result.filePath) ? result.filePath : result.filePath + '.mp4'
-      if (clips.some(c => key(mediaPath(c, clipsDir)) === key(output))) throw Error('Elegí un archivo distinto al de un clip de la biblioteca.')
-      Object.assign(job, { clip, clipsDir, output, width, height, x, y, mix: mix && typeof mix === 'object' && !Array.isArray(mix) ? mix : clip.mix || undefined })
+      const { clip, clipsDir, editing } = await findClip(source)
+      if ((clip.savedEdit && !editing) || (geometry && !await readTrack(clip, clipsDir)))
+        throw Error('Abrí el original para guardar los cambios.')
+      const originalDuration = clip.savedEdit?.originalDuration ?? clip.durationSec
+      const { start, end, mix, prefs } = edits || {}
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end > originalDuration + 1)
+        throw Error('El intervalo seleccionado no es válido.')
+      if (jobs.get(sender) !== job) return null
+      Object.assign(job, { clip, clipsDir, geometry, width, height, x, y, start, end,
+        prefs: geometry ? preferences(prefs || {}) : null,
+        mix: normalizeMix(mix && typeof mix === 'object' && !Array.isArray(mix) ? mix : clip.mix ?? undefined, clip.audioApps || []) })
       job.dir = await fs.mkdtemp(path.join(os.tmpdir(), 'clipper-overlay-'))
       if (jobs.get(sender) !== job) { await cleanup(job); return null }
       return job.id
@@ -66,7 +96,7 @@ function installInputExport({ ipcMain, dialog, store, window }) {
   ipcMain.handle('inputs:export:frame', async ({ sender }, id, time, data) => {
     const job = get(sender, id)
     const index = job.times.length
-    if (!Number.isInteger(time) || (index ? time <= job.times[index - 1] : time !== 0) ||
+    if (!job.geometry || !Number.isInteger(time) || (index ? time <= job.times[index - 1] : time !== 0) ||
         time > 3_600_000 || index >= 120_000 || !(data instanceof ArrayBuffer) || data.byteLength < 33 || data.byteLength > 16 * 1024 * 1024)
       throw Error('El fotograma de inputs no es válido.')
     const png = Buffer.from(data)
@@ -85,28 +115,45 @@ function installInputExport({ ipcMain, dialog, store, window }) {
     const job = get(sender, id)
     job.finishing = true
     try {
-      if (!job.times.length) throw Error('No se generó ningún fotograma de inputs.')
+      if (job.geometry && !job.times.length) throw Error('No se generó ningún fotograma de inputs.')
       const list = path.join(job.dir, 'map.ffconcat')
-      await fs.writeFile(list, 'ffconcat version 1.0\n' + job.times.map((time, i) =>
+      if (job.geometry) await fs.writeFile(list, 'ffconcat version 1.0\n' + job.times.map((time, i) =>
         `file ${i}.png\noption framerate 1000\n` +
         (i + 1 < job.times.length ? `duration ${((job.times[i + 1] - time) / 1000).toFixed(3)}\n` : '')
       ).join(''))
-      await mediaFiles.readJob(job.clip.id, async () => {
+      await mediaFiles.edit(job.clip.id, async () => {
         const clip = await store.getClip(job.clip.id)
         if (!clip || version(clip) !== version(job.clip) || clip.fileName !== job.clip.fileName ||
-            job.clipsDir !== await store.getClipsDir()) throw Error('El clip cambió. Volvé a abrirlo y exportalo de nuevo.')
-        const outputKey = key(job.output)
-        if ((await store.listClips()).some(c => key(mediaPath(c, job.clipsDir)) === outputKey))
-          throw Error('Elegí un archivo distinto al de un clip de la biblioteca.')
-        const dir = await fs.mkdtemp(path.join(path.dirname(job.output), '.clipper-export-'))
+            job.clipsDir !== await store.getClipsDir()) throw Error('El clip cambió. Volvé a abrirlo para guardar los inputs.')
+        const input = mediaPath(clip, job.clipsDir)
+        const original = originalPath(clip, job.clipsDir)
+        const dir = await fs.mkdtemp(path.join(path.dirname(input), '.clipper-inputs-'))
         try {
-          const temp = path.join(dir, 'export.mp4')
-          const input = mediaPath(clip, job.clipsDir)
+          const temp = path.join(dir, 'video' + path.extname(input))
           const mic = clip.micFile ? mediaPath(clip, job.clipsDir, clip.micFile) : null
           const apps = (clip.audioApps || []).map(track => ({ ...track, file: mediaPath(clip, job.clipsDir, track.file) }))
-          await ffmpeg.renderMix(input, mic, job.mix, temp, { video: 'encode', apps,
-            overlay: { list, width: job.width, height: job.height, x: job.x, y: job.y } })
-          await mediaFiles.replaceFile(temp, job.output)
+          const saved = clip.savedEdit
+          const originalDuration = saved?.originalDuration ?? clip.durationSec
+          const cut = job.start > .05 || job.end < originalDuration - .05
+          await ffmpeg.renderMix(saved ? original : input, mic, job.mix, temp, {
+            startSec: cut ? job.start : undefined, endSec: cut ? job.end : undefined,
+            video: job.geometry || cut ? 'encode' : 'copy', apps,
+            overlay: job.geometry ? { list, width: job.width, height: job.height, x: job.x, y: job.y } : undefined,
+          })
+          const { size } = await fs.stat(temp)
+          const durationSec = await ffmpeg.probeDuration(temp)
+          if (!size || !durationSec) throw Error('No se pudo verificar el video guardado.')
+          if (!saved) {
+            await fs.mkdir(path.dirname(original), { recursive: true })
+            await fs.link(input, original).catch(async error => {
+              if (error.code === 'EEXIST') return
+              await fs.copyFile(input, original, COPYFILE_EXCL)
+            })
+          }
+          await replaceClip(clip, job.clipsDir, temp, {
+            ...clip, mediaRevision: randomUUID(), sizeBytes: size, durationSec, mix: job.mix,
+            savedEdit: { originalSize: saved?.originalSize ?? clip.sizeBytes, originalDuration, start: job.start, end: job.end, prefs: job.prefs },
+          })
         } finally {
           await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
         }
@@ -114,6 +161,28 @@ function installInputExport({ ipcMain, dialog, store, window }) {
     } finally {
       await cleanup(job)
     }
+  })
+
+  ipcMain.handle('inputs:restore', async (_event, source) => {
+    const { clip } = await findClip(source)
+    return mediaFiles.edit(clip.id, async () => {
+      const { clip: current, clipsDir } = await findClip(source)
+      if (!current.savedEdit) return
+      const original = originalPath(current, clipsDir)
+      const dir = await fs.mkdtemp(path.join(path.dirname(original), '.restore-'))
+      try {
+        const temp = path.join(dir, path.basename(original))
+        await fs.copyFile(original, temp)
+        await replaceClip(current, clipsDir, temp, {
+          ...current, savedEdit: null, mediaRevision: randomUUID(),
+          sizeBytes: current.savedEdit.originalSize, durationSec: current.savedEdit.originalDuration,
+          mix: { game: 1, mic: 1, gameMuted: false, micMuted: false },
+        })
+        await mediaFiles.release([original], () => fs.rm(original, { force: true }).catch(() => {}))
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
+      }
+    })
   })
 
   ipcMain.handle('inputs:export:cancel', async ({ sender }, id) => {

@@ -1,5 +1,5 @@
 const { ipcRenderer } = require('electron')
-const { overlayRect } = require('./overlay-layout')
+const { overlayRect, videoPicture } = require('./overlay-layout')
 
 async function overlayImage(svg, width, height) {
   const copy = svg.cloneNode(true)
@@ -22,10 +22,23 @@ async function overlayImage(svg, width, height) {
 async function exportInputs({ video, src, prefs, track, sample, createRenderer, canceled, report }) {
   const width = video.videoWidth, height = video.videoHeight
   if (!width || !height || !Number.isFinite(video.duration)) throw Error('Esperá a que cargue el video.')
-  const duration = Math.ceil(video.duration * 1000)
-  const shownWidth = Math.min(video.clientWidth, video.clientHeight * width / height) || width
-  const ratio = width / shownWidth
-  const picture = { left: 0, top: 0, width: shownWidth, height: height / ratio }
+  const mix = JSON.parse(video.dataset.inputExportMix || 'null')
+  const [start, end] = JSON.parse(video.dataset.saveRange || '[]')
+  const edits = { start, end, mix, prefs }
+  if (!track) {
+    const job = await ipcRenderer.invoke('inputs:export:start', src, null, edits)
+    if (!job) return false
+    try {
+      if (canceled()) return false
+      report('Guardando cambios…')
+      await ipcRenderer.invoke('inputs:export:finish', job)
+      return true
+    } finally { await ipcRenderer.invoke('inputs:export:cancel', job) }
+  }
+  const offset = Math.round(start * 1000), duration = Math.ceil((end - start) * 1000)
+  const picture = videoPicture(video)
+  const { ratio } = picture
+  Object.assign(picture, { left: picture.sourceLeft, top: picture.sourceTop })
   const keys = new Set()
   if (prefs.mode !== 'pad') keys.add(prefs.keyboard === 'compact' ? 'basic' : prefs.keyboard)
   if (prefs.mode !== 'kbm') keys.add(prefs.skin)
@@ -39,8 +52,7 @@ async function exportInputs({ video, src, prefs, track, sample, createRenderer, 
   const y = Math.max(0, Math.floor(Math.min(...rectangles.map(r => r.top * ratio)) - 8 * ratio))
   const right = Math.min(width, Math.ceil(Math.max(...rectangles.map(r => (r.left + r.width) * ratio)) + 8 * ratio))
   const bottom = Math.min(height, Math.ceil(Math.max(...rectangles.map(r => (r.top + r.height) * ratio)) + 8 * ratio))
-  const mix = JSON.parse(video.dataset.inputExportMix || 'null')
-  const job = await ipcRenderer.invoke('inputs:export:start', src, { width, height, x, y, mix })
+  const job = await ipcRenderer.invoke('inputs:export:start', src, { width, height, x, y }, edits)
   if (!job) return false
 
   const canvas = document.createElement('canvas')
@@ -56,13 +68,13 @@ async function exportInputs({ video, src, prefs, track, sample, createRenderer, 
   }
 
   try {
-    const times = new Set([0, Math.ceil(track.coverageStartMs || 0), Math.floor(track.durationMs) + 1])
+    const times = new Set([offset, Math.ceil(track.coverageStartMs || 0), Math.floor(track.durationMs) + 1])
     for (const frame of track.frames) {
       times.add(Math.ceil(frame.t))
       // Only relative mouse movement expires without a new frame.
       if (frame.state.mouse.dx || frame.state.mouse.dy || frame.state.mouse.wheel) times.add(Math.ceil(frame.t + 100))
     }
-    const events = [...times].filter(t => t >= 0 && t < duration).sort((a, b) => a - b)
+    const events = [...times].filter(t => t >= offset && t < offset + duration).sort((a, b) => a - b)
     let previous
     let nextProgress = 0
     for (const time of events) {
@@ -87,10 +99,10 @@ async function exportInputs({ video, src, prefs, track, sample, createRenderer, 
       }
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
       if (!blob) throw Error('No se pudo dibujar el mapa.')
-      await ipcRenderer.invoke('inputs:export:frame', job, time, await blob.arrayBuffer())
-      if (time >= nextProgress) {
-        report(`Preparando mapa · ${Math.floor(time * 100 / duration)}%`)
-        nextProgress = time + 500
+      await ipcRenderer.invoke('inputs:export:frame', job, time - offset, await blob.arrayBuffer())
+      if (time - offset >= nextProgress) {
+        report(`Preparando mapa · ${Math.floor((time - offset) * 100 / duration)}%`)
+        nextProgress = time - offset + 500
       }
     }
     if (canceled()) return false
