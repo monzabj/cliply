@@ -1,6 +1,6 @@
 {
   "name": "clipper",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -10,6 +10,7 @@
     "electron:build": "node scripts/build-input-worker.cjs && node scripts/build-audio-worker.cjs && next build && electron-builder",
     "electron:build:win": "node scripts/build-input-worker.cjs && node scripts/build-audio-worker.cjs && next build && electron-builder --win",
     "test": "node --test test/*.test.js",
+    "test:selection:integration": "node test/selection.integration.cjs",
     "build:inputs": "node scripts/build-input-worker.cjs",
     "test:inputs:integration": "node test/inputs.integration.cjs",
     "test:capture:integration": "node test/capture.integration.cjs",

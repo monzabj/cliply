@@ -265,6 +265,10 @@ export function createWebAPI(): ClipperAPI {
       return meta
     },
 
+    async batchClips() {
+      throw new Error('Available in the desktop app / Disponible en la aplicación de escritorio')
+    },
+
     async deleteClip(id) {
       await tx(STORE_BLOBS, 'readwrite', (s) => s.delete(id))
       await tx(STORE_CLIPS, 'readwrite', (s) => s.delete(id))

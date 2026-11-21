@@ -1,4 +1,4 @@
-import type { ClipperAPI, DesktopBridge, ShotResult } from './api'
+import type { ClipperAPI, DesktopBridge, ShotResult, ClipBatchResult } from './api'
 import type {
   CaptureSource,
   ClipFormat,
@@ -46,6 +46,7 @@ export function createDesktopAPI(bridge: DesktopBridge): ClipperAPI {
     listClips: () => bridge.invoke<ClipMeta[]>('clips:list'),
     saveClip: (payload: SaveClipPayload) => bridge.invoke<ClipMeta>('clips:save', payload),
     deleteClip: (id) => bridge.invoke('clips:delete', id),
+    batchClips: (ids, action) => bridge.invoke<ClipBatchResult>('clips:batch', ids, action),
     renameClip: (id, title) => bridge.invoke<ClipMeta>('clips:rename', id, title),
     renameClipFile: (id, baseName) => bridge.invoke<ClipMeta>('clips:rename-file', id, baseName),
     trimClip: (payload: TrimPayload) => bridge.invoke<ClipMeta>('clips:trim', payload),

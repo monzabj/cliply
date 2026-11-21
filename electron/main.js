@@ -39,6 +39,8 @@ const appAudio = require('./audio/recorder')
 const {normalizeMix} = require('./audio/mix')
 const continuous = require('./continuous')
 const mediaFiles = require('./media-files')
+const clipBatch = require('./clip-batch')
+let clipBatchBusy = false
 const {directory:mediaDirectory,mediaPath,originalPath,cutMarkers}=require('./media-paths')
 const appLayers = (clip, dir) => (clip.audioApps||[]).map(track=>({...track,file:mediaPath(clip,dir,track.file)}))
 let clipBuffersArmed=false
@@ -1340,6 +1342,40 @@ function registerIpc() {
     } finally {
       savingFiles.delete(fileName)
     }
+  })
+
+  ipcMain.handle('clips:batch', async (_e, ids, action) => {
+    if (!Array.isArray(ids) || !ids.length || ids.some(id => typeof id !== 'string') || !['copy', 'move', 'delete'].includes(action)) throw Error('Invalid clip selection')
+    if (clipBatchBusy) throw Error('Another clip operation is in progress / Ya hay una operación en curso')
+    clipBatchBusy = true
+    try {
+      const unique = new Set(ids)
+      const clips = (await store.listClips()).filter(clip => unique.has(clip.id))
+      if (clips.length !== unique.size || clips.some(clip => clip.recording)) throw Error('Selection changed or recording in progress / La selección cambió o hay una grabación en curso')
+      const es = trayLang(await store.getSettings()) === 'es'
+      const canceled = { completed: [], failed: [], canceled: true }
+      let destination
+      if (action !== 'delete') {
+        const picked = await dialog.showOpenDialog(win, {
+          title: es ? 'Elegir carpeta de destino' : 'Choose destination folder',
+          properties: ['openDirectory', 'createDirectory'],
+        })
+        if (picked.canceled || !picked.filePaths[0]) return canceled
+        destination = picked.filePaths[0]
+      }
+      if (action !== 'copy') {
+        const verb = action === 'delete' ? (es ? 'Borrar' : 'Delete') : (es ? 'Mover' : 'Move')
+        const answer = await dialog.showMessageBox(win, {
+          type: 'warning', buttons: [es ? 'Cancelar' : 'Cancel', verb], defaultId: 0, cancelId: 0,
+          message: `${verb} ${clips.length} clips?`,
+          detail: action === 'delete'
+            ? (es ? 'Se enviarán los clips seleccionados y sus archivos asociados a la Papelera. Si no se puede, se informará el error sin borrarlos permanentemente.' : 'Selected clips and their associated files will be sent to the Recycle Bin. Failures are reported without permanently deleting files.')
+            : (es ? `Se moverán a ${destination}. Los originales desaparecerán de esta biblioteca y de sus vistas previas. Para conservarlos acá, cancelá y elegí «Copiar a…».` : `Files will move to ${destination}. Originals will disappear from this library and its previews. To keep them here, cancel and choose “Copy to…”.`),
+        })
+        if (answer.response !== 1) return canceled
+      }
+      return await clipBatch.runBatch({ clips, action, library: await store.getClipsDir(), destination, store, trashItem: file => shell.trashItem(file) })
+    } finally { clipBatchBusy = false }
   })
 
   ipcMain.handle('clips:delete', async (_e, id) => mediaFiles.edit(id, async () => {

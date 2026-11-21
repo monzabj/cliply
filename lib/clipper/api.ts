@@ -30,6 +30,13 @@ export interface ShotResult {
   reason?: string
 }
 
+export type ClipBatchAction = 'copy' | 'move' | 'delete'
+export interface ClipBatchResult {
+  completed: string[]
+  failed: { id: string; title: string; error: string }[]
+  canceled: boolean
+}
+
 export interface ClipperAPI {
   readonly isDesktop: boolean
   readonly platform: string
@@ -62,6 +69,7 @@ export interface ClipperAPI {
   listClips(): Promise<ClipMeta[]>
   saveClip(payload: SaveClipPayload): Promise<ClipMeta>
   deleteClip(id: string): Promise<void>
+  batchClips(ids: string[], action: ClipBatchAction): Promise<ClipBatchResult>
   renameClip(id: string, title: string): Promise<ClipMeta>
   /** Renames the file on disk. The extension is not the caller's to change. */
   renameClipFile(id: string, baseName: string): Promise<ClipMeta>

@@ -44,6 +44,23 @@ SHA-256 check without running setup.
 - **Gallery** — clips grouped by day, searchable by game or window. Open one to play it with audio; drag the amber handles on the timeline to trim, then choose **Overwrite this clip** or **Save as new clip** (frame-accurate ffmpeg re-encode).
 - **Tray** — closing the window keeps the buffer alive in the tray; quit from the tray menu.
 
+## Select and manage clips (desktop)
+
+Click the circle at the top right of a clip to enter selection mode. Click anywhere
+on another clip to toggle it, or hold the left mouse button and drag across clips;
+holding near the top or bottom scrolls the library. Escape or **Cancel selection**
+returns to normal playback. **Select all visible** respects the current filters.
+
+**Copy to…** keeps the originals. **Move to…** asks for confirmation and removes
+successfully moved clips from this library and its previews. Both preserve associated
+audio, input tracks, markers and edit originals, and avoid overwriting existing files.
+Choose a destination outside the library. **Delete selected** confirms the count and
+uses the Recycle Bin; a trash failure never falls back to permanent deletion.
+Failures remain selected for retry. Active recordings cannot be selected.
+
+Run `pnpm test:selection:integration` for the pointer/keyboard regression in an
+isolated Electron window with generated clips; it never modifies the real library.
+
 ## Browser preview
 
 The same UI runs in a plain browser (`pnpm dev`) with a fallback adapter: the OS share picker replaces the source list, clips live in IndexedDB, trims are re-recorded in real time, and hotkeys only fire while the tab is focused. Useful for developing the UI; the desktop app is the real product.

@@ -1,8 +1,9 @@
 'use client'
 
 import * as React from 'react'
-import { registerMediaRelease, unloadMedia } from '@/lib/clipper/media-release'
-import { Film, FolderOpen, Image as ImageIcon, Monitor, Play, Search, Volume2, VolumeX } from 'lucide-react'
+import { registerMediaRelease, releaseClipMedia, unloadMedia } from '@/lib/clipper/media-release'
+import { Check, Copy, Film, FolderInput, FolderOpen, Image as ImageIcon, Monitor, Play, Search, Trash2, Volume2, VolumeX, X } from 'lucide-react'
+import type { ClipBatchAction } from '@/lib/clipper/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Kbd } from '@/components/ui/kbd'
@@ -91,7 +92,7 @@ function sourceKeyOf(item: LibraryItem) {
 }
 
 export function GalleryPage() {
-  const { api, clips, shots, clipsLoading, isDesktop, setViewingClipId, setPage, settings, updateSettings } =
+  const { api, clips, shots, clipsLoading, isDesktop, setViewingClipId, setPage, settings, updateSettings, refreshClips } =
     useClipper()
   const t = useT()
   const dayLabelOf = useDayLabel()
@@ -100,6 +101,13 @@ export function GalleryPage() {
   const [kind, setKind] = React.useState<KindFilter>('all')
   const [sourceFilter, setSourceFilter] = React.useState<string>('')
   const [viewingShotId, setViewingShotId] = React.useState<string | null>(null)
+  const [selected, setSelected] = React.useState<Set<string>>(new Set())
+  const [busy, setBusy] = React.useState(false)
+  const [dragging, setDragging] = React.useState(false)
+  const scrollRef = React.useRef<HTMLDivElement>(null)
+  const drag = React.useRef<{ start: number; end: number; base: Set<string>; add: boolean; x: number; y: number; originX: number; originY: number; moved: boolean } | null>(null)
+  const suppressClick = React.useRef(false)
+  const selecting = selected.size > 0
 
   // Clips and stills live in one list; `kind` is what tells them apart.
   const library = React.useMemo<LibraryItem[]>(
@@ -172,6 +180,117 @@ export function GalleryPage() {
   ]
 
   const hasFilters = kind !== 'all' || Boolean(sourceFilter) || Boolean(query.trim())
+  const visibleClipIds = React.useMemo(() => filtered.filter(i => i.kind === 'clip' && !i.recording).map(i => i.id), [filtered])
+
+  // Filtering or removing a clip must not leave an invisible destructive selection.
+  React.useEffect(() => {
+    const visible = new Set(visibleClipIds)
+    setSelected(previous => {
+      const next = new Set([...previous].filter(id => visible.has(id)))
+      return next.size === previous.size ? previous : next
+    })
+    drag.current = null
+    suppressClick.current = false
+    setDragging(false)
+  }, [visibleClipIds])
+
+  function cancelSelection() {
+    drag.current = null
+    suppressClick.current = false
+    setDragging(false)
+    setSelected(new Set())
+  }
+
+  function toggleClip(id: string) {
+    if (busy) return
+    setSelected(previous => {
+      const next = new Set(previous)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  React.useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !busy) {
+        drag.current = null
+        suppressClick.current = false
+        setDragging(false)
+        setSelected(new Set())
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [busy])
+
+  React.useEffect(() => {
+    if (!dragging) return
+    let frame: number
+    const finish = () => { drag.current = null; setDragging(false) }
+    const move = (event: PointerEvent) => {
+      if (!event.buttons) return finish()
+      const current = drag.current
+      if (current) { current.x = event.clientX; current.y = event.clientY }
+    }
+    const tick = () => {
+      const current = drag.current, scroll = scrollRef.current
+      if (!current || !scroll) return
+      if (Math.hypot(current.x - current.originX, current.y - current.originY) > 5) current.moved = true
+      if (current.moved) {
+        const bounds = scroll.getBoundingClientRect()
+        const inside = current.x >= bounds.left && current.x <= bounds.right
+        if (inside && current.y > bounds.bottom - 48) scroll.scrollTop += Math.min(20, Math.max(0, (current.y - bounds.bottom + 48) / 2))
+        if (inside && current.y < bounds.top + 48) scroll.scrollTop -= Math.min(20, Math.max(0, (bounds.top + 48 - current.y) / 2))
+        const hit = document.elementFromPoint(current.x, Math.max(bounds.top + 1, Math.min(bounds.bottom - 1, current.y)))?.closest<HTMLElement>('[data-clip-id]')
+        const end = hit ? visibleClipIds.indexOf(hit.dataset.clipId!) : -1
+        if (end >= 0 && end !== current.end) {
+          current.end = end
+          const next = new Set(current.base)
+          for (let i = Math.min(current.start, end); i <= Math.max(current.start, end); i++) {
+            if (current.add) next.add(visibleClipIds[i])
+            else next.delete(visibleClipIds[i])
+          }
+          setSelected(next)
+        }
+      }
+      frame = requestAnimationFrame(tick)
+    }
+    frame = requestAnimationFrame(tick)
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', finish)
+    window.addEventListener('pointercancel', finish)
+    window.addEventListener('blur', finish)
+    return () => {
+      cancelAnimationFrame(frame)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', finish)
+      window.removeEventListener('pointercancel', finish)
+      window.removeEventListener('blur', finish)
+    }
+  }, [dragging, visibleClipIds])
+
+  async function runSelected(action: ClipBatchAction) {
+    if (!api || busy || !selected.size) return
+    setBusy(true)
+    drag.current = null
+    setDragging(false)
+    for (const id of selected) releaseClipMedia(id)
+    try {
+      const result = await api.batchClips([...selected], action)
+      if (!result.canceled) {
+        await refreshClips()
+        setSelected(new Set(result.failed.map(f => f.id)))
+        if (result.completed.length) toast.success(t(`selection.${action}Done`, { n: result.completed.length }))
+        if (result.failed.length) toast.error(t('selection.failed', { n: result.failed.length }), {
+          description: result.failed.map(f => `${f.title}: ${f.error}`).join('\n'), duration: 10000,
+        })
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+      await refreshClips()
+    } finally { setBusy(false) }
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -291,7 +410,39 @@ export function GalleryPage() {
         </div>
       </div>
 
-      <div className="scroll-y flex-1">
+      {selecting && (
+        <div role="toolbar" aria-label={t('selection.toolbar')} aria-busy={busy} className="flex shrink-0 flex-wrap items-center gap-2 border-y bg-muted/60 px-6 py-3">
+          <span role="status" className="mr-auto text-sm font-medium">{t('selection.count', { n: selected.size })}</span>
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => setSelected(new Set(visibleClipIds))}>{t('selection.all')}</Button>
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => void runSelected('copy')}><Copy />{t('selection.copy')}</Button>
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => void runSelected('move')}><FolderInput />{t('selection.move')}</Button>
+          <Button variant="destructive" size="sm" disabled={busy} onClick={() => void runSelected('delete')}><Trash2 />{t('selection.delete')}</Button>
+          <Button variant="ghost" size="sm" disabled={busy} onClick={cancelSelection}><X />{t('selection.cancel')}</Button>
+        </div>
+      )}
+      <div ref={scrollRef} className={cn('scroll-y flex-1', selecting && 'select-none')}
+        onPointerDownCapture={event => {
+          if (event.button !== 0 || busy) return
+          suppressClick.current = false
+          const target = event.target as HTMLElement
+          const card = target.closest<HTMLElement>('[data-clip-id]')
+          if (!card || (!selecting && !target.closest('[data-clip-select]'))) return
+          const id = card.dataset.clipId!, index = visibleClipIds.indexOf(id)
+          if (index < 0) return
+          event.preventDefault()
+          suppressClick.current = true
+          drag.current = { start: index, end: index, base: new Set(selected), add: !selected.has(id), x: event.clientX, y: event.clientY, originX: event.clientX, originY: event.clientY, moved: false }
+          toggleClip(id)
+          setDragging(true)
+        }}
+        onClickCapture={event => {
+          const card = (event.target as HTMLElement).closest<HTMLElement>('[data-clip-id]')
+          if (!card || (!selecting && !suppressClick.current)) return
+          event.preventDefault()
+          event.stopPropagation()
+          if (!suppressClick.current || event.detail === 0) toggleClip(card.dataset.clipId!)
+          suppressClick.current = false
+        }}>
         {!clipsLoading && library.length === 0 && (
           <div className="flex min-h-[55vh] flex-col items-center justify-center gap-4 px-6 text-center">
             <div className="flex size-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
@@ -356,7 +507,7 @@ export function GalleryPage() {
               <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
                 {items.map((item) =>
                   item.kind === 'clip' ? (
-                    <ClipCard key={item.id} clip={item} onOpen={() => setViewingClipId(item.id)} />
+                    <ClipCard key={item.id} clip={item} onOpen={() => setViewingClipId(item.id)} selecting={selecting || busy} selected={selected.has(item.id)} onSelect={isDesktop && !item.recording ? () => toggleClip(item.id) : undefined} />
                   ) : (
                     <ShotCard key={item.id} shot={item} onOpen={() => setViewingShotId(item.id)} />
                   ),
@@ -390,7 +541,7 @@ function stopPreview(el: HTMLVideoElement) {
   if (activePreview === el) activePreview = null
 }
 
-function ClipCard({ clip, onOpen }: { clip: ClipMeta; onOpen: () => void }) {
+function ClipCard({ clip, onOpen, selecting, selected, onSelect }: { clip: ClipMeta; onOpen: () => void; selecting: boolean; selected: boolean; onSelect?: () => void }) {
   const { api, deleteClip, renameClip, settings } = useClipper()
   const t = useT()
   const relativeOf = useRelativeDate()
@@ -491,6 +642,7 @@ function ClipCard({ clip, onOpen }: { clip: ClipMeta; onOpen: () => void }) {
   }, [onLeave])
   React.useEffect(() => registerMediaRelease(clip.id, releaseMedia), [clip.id, releaseMedia])
   React.useEffect(() => { releaseMedia() }, [clip.mediaRevision, clip.fileName, releaseMedia])
+  React.useEffect(() => { if (selecting) releaseMedia() }, [selecting, releaseMedia])
 
   const onContextMenu = React.useCallback(
     async (e: React.MouseEvent) => {
@@ -527,17 +679,19 @@ function ClipCard({ clip, onOpen }: { clip: ClipMeta; onOpen: () => void }) {
 
   return (
     <div
-      className="group flex flex-col gap-2"
-      onMouseEnter={onEnter}
+      data-clip-id={onSelect ? clip.id : undefined}
+      className={cn('group relative flex flex-col gap-2 rounded-xl', selected && 'ring-2 ring-signal ring-offset-4 ring-offset-background')}
+      onMouseEnter={selecting ? undefined : onEnter}
       onMouseLeave={onLeave}
-      onContextMenu={onContextMenu}
+      onContextMenu={selecting ? e => e.preventDefault() : onContextMenu}
     >
       <button
         type="button"
         onClick={onOpen}
-        onFocus={onEnter}
+        onFocus={selecting ? undefined : onEnter}
         onBlur={onLeave}
         aria-label={clip.title}
+        aria-pressed={onSelect && selecting ? selected : undefined}
         className="relative aspect-video overflow-hidden rounded-xl border tile-empty outline-none transition-colors group-hover:border-foreground/25 focus-visible:ring-2 focus-visible:ring-ring"
       >
         {thumb && (
@@ -591,6 +745,15 @@ function ClipCard({ clip, onOpen }: { clip: ClipMeta; onOpen: () => void }) {
         )}
       </button>
 
+      {onSelect && (
+        <button type="button" data-clip-select aria-label={t(selected ? 'selection.deselectClip' : 'selection.selectClip', { title: clip.title })}
+          aria-pressed={selected} onClick={onSelect}
+          className={cn('absolute right-2 top-2 z-10 flex size-7 items-center justify-center rounded-full border-2 shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            selected ? 'border-signal bg-signal text-signal-foreground' : 'border-white/80 bg-black/50 text-white hover:bg-black/75')}>
+          {selected && <Check className="size-4" aria-hidden />}
+        </button>
+      )}
+
       <div className="flex flex-col gap-1 px-0.5">
         {editing ? (
           <Input
@@ -613,7 +776,7 @@ function ClipCard({ clip, onOpen }: { clip: ClipMeta; onOpen: () => void }) {
             className="cursor-text truncate text-sm font-medium"
             title={`${clip.title}
 ${t('gallery.renameHint')}`}
-            onDoubleClick={() => setEditing(true)}
+            onDoubleClick={() => { if (!selecting) setEditing(true) }}
           >
             {clip.title}
           </p>
